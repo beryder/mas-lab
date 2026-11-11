@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 
 from library_ioa.plugins.webserver import UvicornWebServer
+from mas.library.enforcement_proxy import require_native_hooks
+from mas.runtime.boundary.webserver import WebServerTransport
 from starlette.authentication import AuthCredentials, AuthenticationBackend, AuthenticationError, SimpleUser
 from starlette.middleware.authentication import AuthenticationMiddleware
 
@@ -39,7 +41,12 @@ class ConfiguredCallers(AuthenticationBackend):
 
 class AuthenticatedWebServer(UvicornWebServer):
     def __init__(self, config_file: str) -> None:
+        require_native_hooks()
         self.backend = ConfiguredCallers(config_file)
+
+    def validate_transports(self, transports: frozenset[WebServerTransport]) -> None:
+        if transports != frozenset({"http"}):
+            raise ValueError("Authenticated A2A serving supports HTTP only; remove gRPC listeners and advertisements")
 
     def _app(self, app):
         app.add_middleware(AuthenticationMiddleware, backend=self.backend)

@@ -52,3 +52,5 @@ The compatible reference-based adapter belongs to enforcement-proxy. Full CFN/SC
 ## Optional release notifications
 
 `ReleasePolicy.subscribe(callback)` receives the native controller's final `DeliveryOutcome`. Only an allowed outcome includes response content. `unsubscribe(callback)` and policy shutdown remove listeners. Notifications are separate from raw execution telemetry, and callback failures cannot authorize or alter a response. Consumers choose their own presentation and duplicate handling.
+
+Authenticated serving is HTTP-only. Native exposure rejects both `a2a.grpc_port` and `a2a.grpc_url` before constructing AgentCards, clients or listeners. The package requires native webserver selection and transport validation in addition to the delivery-policy extension. Authentication middleware protects HTTP requests only and does not provide gRPC authentication.

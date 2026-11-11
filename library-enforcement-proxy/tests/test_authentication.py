@@ -69,3 +69,48 @@ def test_invalid_credentials_fail_startup(tmp_path, monkeypatch, credentials):
     config.write_text(json.dumps({"identities": {name: {"a2a_credential_env": name} for name in names}}))
     with pytest.raises(ValueError):
         AuthenticatedWebServer(str(config))
+
+
+@pytest.mark.parametrize("entry", ["build_app", "serve_background", "serve_blocking"])
+@pytest.mark.parametrize("grpc", [{"grpc_port": 9004}, {"grpc_url": "localhost:9004"}])
+def test_native_startup_rejects_grpc_before_execution(tmp_path, monkeypatch, entry, grpc):
+    from unittest.mock import Mock
+
+    from library_ioa.plugins.a2a.exposure import A2AExposure
+
+    config = tmp_path / "client.json"
+    config.write_text(json.dumps({"identities": {"caller": {"a2a_credential_env": "TEST_CALLER"}}}))
+    monkeypatch.setenv("TEST_CALLER", "a" * 32)
+    server = AuthenticatedWebServer(str(config))
+    registry = Mock()
+    registry.create.return_value = server
+    monkeypatch.setattr("mas.runtime.registry.get_registry", lambda: registry)
+    card = Mock(side_effect=AssertionError("AgentCard constructed"))
+    monkeypatch.setattr("library_ioa.plugins.a2a.exposure.agent_card_from_manifest", card)
+    server.serve_blocking = Mock()
+    server.serve_background = Mock()
+    handler = Mock()
+    exposure = A2AExposure(
+        endpoint={
+            "protocol": "a2a",
+            "usage": "listen",
+            "url": "http://localhost:9003",
+            "a2a": {**grpc, "webserver": {"type": "proxy_authenticated_http", "config_file": str(config)}},
+        }
+    )
+    with pytest.raises(ValueError, match="HTTP only"):
+        getattr(exposure, entry)({}, handler)
+    card.assert_not_called()
+    handler.assert_not_called()
+    server.serve_blocking.assert_not_called()
+    server.serve_background.assert_not_called()
+    server.validate_transports(frozenset({"http"}))
+
+
+def test_missing_native_transport_validation_fails_startup(monkeypatch):
+    from library_ioa.plugins.a2a.exposure import A2AExposure
+    from mas.library.enforcement_proxy import require_native_hooks
+
+    monkeypatch.delattr(A2AExposure, "validate_transports")
+    with pytest.raises(RuntimeError, match="transport validation"):
+        require_native_hooks()
