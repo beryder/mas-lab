@@ -31,6 +31,12 @@ practical examples.
 
 ## Plugins by Category
 
+### A2A_Delivery_Policy
+
+| Class           | Full module path                        | Library                     |
+| --------------- | --------------------------------------- | --------------------------- |
+| `ReleasePolicy` | `mas.library.enforcement_proxy.plugins` | `library-enforcement-proxy` |
+
 ### Agent_Comm
 
 | Class                 | Full module path                                       | Library            |
@@ -124,14 +130,15 @@ practical examples.
 
 ### Governance
 
-| Class                    | Full module path                                             | Library            |
-| ------------------------ | ------------------------------------------------------------ | ------------------ |
-| `BacktrackOnErrorPlugin` | `mas.library.standard.plugins.governance.backtrack_on_error` | `library-standard` |
-| `BudgetPlugin`           | `mas.library.standard.plugins.governance.budget`             | `library-standard` |
-| `DebugScriptPlugin`      | `mas.library.standard.plugins.governance.debug_script`       | `library-standard` |
-| `NoUndeclaredToolPlugin` | `mas.library.standard.plugins.governance.no_undeclared_tool` | `library-standard` |
-| `RetryOnErrorPlugin`     | `mas.library.standard.plugins.governance.retry_on_error`     | `library-standard` |
-| `SampleGovernancePlugin` | `mas.library.standard.plugins.governance.sample`             | `library-standard` |
+| Class                    | Full module path                                             | Library                     |
+| ------------------------ | ------------------------------------------------------------ | --------------------------- |
+| `BacktrackOnErrorPlugin` | `mas.library.standard.plugins.governance.backtrack_on_error` | `library-standard`          |
+| `BudgetPlugin`           | `mas.library.standard.plugins.governance.budget`             | `library-standard`          |
+| `DebugScriptPlugin`      | `mas.library.standard.plugins.governance.debug_script`       | `library-standard`          |
+| `NoUndeclaredToolPlugin` | `mas.library.standard.plugins.governance.no_undeclared_tool` | `library-standard`          |
+| `RequestPolicy`          | `mas.library.enforcement_proxy.plugins`                      | `library-enforcement-proxy` |
+| `RetryOnErrorPlugin`     | `mas.library.standard.plugins.governance.retry_on_error`     | `library-standard`          |
+| `SampleGovernancePlugin` | `mas.library.standard.plugins.governance.sample`             | `library-standard`          |
 
 ### Hitl_Contract
 
@@ -269,103 +276,107 @@ practical examples.
 
 ### Webserver
 
-| Class              | Full module path                | Library       |
-| ------------------ | ------------------------------- | ------------- |
-| `UvicornWebServer` | `library_ioa.plugins.webserver` | `library-ioa` |
+| Class                    | Full module path                          | Library                     |
+| ------------------------ | ----------------------------------------- | --------------------------- |
+| `AuthenticatedWebServer` | `mas.library.enforcement_proxy.webserver` | `library-enforcement-proxy` |
+| `UvicornWebServer`       | `library_ioa.plugins.webserver`           | `library-ioa`               |
 
 ---
 
 ## All Plugins — Alphabetical Index
 
-| Class                            | Category             | Library             |
-| -------------------------------- | -------------------- | ------------------- |
-| `A2AAgentComm`                   | agent_comm           | `library-ioa`       |
-| `A2AExposure`                    | agent_expose         | `library-ioa`       |
-| `A2ALayer`                       | stack_layer          | `library-ioa`       |
-| `ADKSkillPlugin`                 | skill_impl           | `library-skills`    |
-| `AutoApproveResponder`           | hitl_responder       | `library-standard`  |
-| `AutoDenyResponder`              | hitl_responder       | `library-standard`  |
-| `AutoResolveHitlContract`        | hitl_contract        | `library-standard`  |
-| `BacktrackOnErrorPlugin`         | governance           | `library-standard`  |
-| `BudgetPlugin`                   | governance           | `library-standard`  |
-| `CacheLLMProvider`               | llm_provider         | `library-standard`  |
-| `ClickhouseDumpStep`             | step                 | `library-telemetry` |
-| `CompareKgStep`                  | step                 | `library-kg`        |
-| `CompareOtelSpansStep`           | step                 | `library-telemetry` |
-| `ContextAssemblerPlugin`         | assembler            | `library-standard`  |
-| `ControlRpcProtocol`             | control_protocol     | `library-standard`  |
-| `ControlTools`                   | system_tool          | `library-standard`  |
-| `CopyDirRelatedState`            | related_state        | `library-standard`  |
-| `CotPlugin`                      | design_pattern       | `library-standard`  |
-| `DebugScriptPlugin`              | governance           | `library-standard`  |
-| `DeterministicLinearPlugin`      | design_pattern       | `library-standard`  |
-| `DeterministicParallelPlugin`    | design_pattern       | `library-standard`  |
-| `DeterministicSingleAgentPlugin` | design_pattern       | `library-standard`  |
-| `DropSummarizer`                 | summarizer           | `library-standard`  |
-| `EmbedStatesStep`                | step                 | `library-kg`        |
-| `EventsToOtelStep`               | step                 | `library-telemetry` |
-| `ExportOtelStep`                 | step                 | `library-telemetry` |
-| `FaultInjectMiddleware`          | infra_middleware     | `library-standard`  |
-| `GitWorktreeRelatedState`        | related_state        | `library-standard`  |
-| `HttpLayer`                      | stack_layer          | `library-ioa`       |
-| `HybridCheckpointStore`          | checkpoint_store     | `library-standard`  |
-| `InformUserTool`                 | system_tool          | `library-standard`  |
-| `InMemoryCheckpointStore`        | checkpoint_store     | `library-standard`  |
-| `IntrospectionPlugin`            | design_pattern       | `library-standard`  |
-| `JsonCheckpointStore`            | checkpoint_store     | `library-standard`  |
-| `LangChainSkillPlugin`           | skill_impl           | `library-skills`    |
-| `ListClickhouseSessionsStep`     | step                 | `library-telemetry` |
-| `LlmCacheMiddleware`             | infra_middleware     | `library-standard`  |
-| `LlmSchedulerMiddleware`         | infra_middleware     | `library-standard`  |
-| `LlmSummarizer`                  | summarizer           | `library-standard`  |
-| `LocalAgentComm`                 | agent_comm           | `library-standard`  |
-| `LocalGroupAgentComm`            | agent_comm           | `library-standard`  |
-| `LocalToolProvider`              | tool_provider        | `library-standard`  |
-| `MCPToolProvider`                | tool_provider        | `library-ioa`       |
-| `ModeratedRoundsPlugin`          | design_pattern       | `library-standard`  |
-| `NativeObservabilityPlugin`      | observability        | `library-standard`  |
-| `NativeSkillPlugin`              | skill_impl           | `library-skills`    |
-| `Neo4jDumpStep`                  | step                 | `library-kg`        |
-| `Neo4jKGCodec`                   | codec                | `library-kg`        |
-| `Neo4jPushStep`                  | step                 | `library-kg`        |
-| `NormalizeEventsStep`            | step                 | `library-kg`        |
-| `NormalizeOtelStep`              | step                 | `library-kg`        |
-| `NoUndeclaredToolPlugin`         | governance           | `library-standard`  |
-| `OpenAILLMProvider`              | llm_provider         | `library-standard`  |
-| `OtelObservabilityPlugin`        | observability        | `library-telemetry` |
-| `PlanExecutePlugin`              | design_pattern       | `library-standard`  |
-| `PlotMultilevelTrajectoryKGStep` | step                 | `library-kg`        |
-| `ReactPlugin`                    | design_pattern       | `library-standard`  |
-| `RegistryHitlContract`           | hitl_contract        | `library-standard`  |
-| `RegistryUserIOContract`         | user_io_contract     | `library-standard`  |
-| `RequestHumanInputTool`          | system_tool          | `library-standard`  |
-| `RetryOnErrorPlugin`             | governance           | `library-standard`  |
-| `RunSkillScriptPlugin`           | skill_shell          | `library-skills`    |
-| `SampleGovernancePlugin`         | governance           | `library-standard`  |
-| `SemanticMemoryPlugin`           | memory               | `library-standard`  |
-| `SendTool`                       | engine_tool_provider | `library-standard`  |
-| `SendTool`                       | system_tool          | `library-standard`  |
-| `SinglePassPlugin`               | design_pattern       | `library-standard`  |
-| `SkillCatalogPlugin`             | skill_catalog        | `library-skills`    |
-| `SkillToolsPlugin`               | skill_tools          | `library-skills`    |
-| `SlidingWindowConversation`      | context_manager      | `library-standard`  |
-| `SlimAgentComm`                  | stack_layer          | `library-ioa`       |
-| `SpawnSubagentTool`              | system_tool          | `library-standard`  |
-| `SpawnSubagentTool`              | system_tool          | `library-standard`  |
-| `StackAgentComm`                 | agent_comm           | `library-standard`  |
-| `StackConversation`              | context_manager      | `library-standard`  |
-| `StateMachinePlugin`             | design_pattern       | `library-standard`  |
-| `SubagentSpawner`                | engine_tool_provider | `library-standard`  |
-| `SummarizingConversation`        | context_manager      | `library-standard`  |
-| `ThresholdCircuitBreaker`        | circuit_breaker      | `library-standard`  |
-| `ToyEchoMetric`                  | eval_metric          | `library-eval`      |
-| `TraceContextLayer`              | agent_comm           | `library-standard`  |
-| `TreeOfThoughtsPlugin`           | design_pattern       | `library-standard`  |
-| `UvicornWebServer`               | webserver            | `library-ioa`       |
-| `ValidateKgStep`                 | step                 | `library-kg`        |
-| `VerifyEventsStep`               | step                 | `library-kg`        |
-| `VerifyOtelStep`                 | step                 | `library-telemetry` |
-| `WorkdirSandbox`                 | execute_sandbox      | `library-standard`  |
+| Class                            | Category             | Library                     |
+| -------------------------------- | -------------------- | --------------------------- |
+| `A2AAgentComm`                   | agent_comm           | `library-ioa`               |
+| `A2AExposure`                    | agent_expose         | `library-ioa`               |
+| `A2ALayer`                       | stack_layer          | `library-ioa`               |
+| `ADKSkillPlugin`                 | skill_impl           | `library-skills`            |
+| `AuthenticatedWebServer`         | webserver            | `library-enforcement-proxy` |
+| `AutoApproveResponder`           | hitl_responder       | `library-standard`          |
+| `AutoDenyResponder`              | hitl_responder       | `library-standard`          |
+| `AutoResolveHitlContract`        | hitl_contract        | `library-standard`          |
+| `BacktrackOnErrorPlugin`         | governance           | `library-standard`          |
+| `BudgetPlugin`                   | governance           | `library-standard`          |
+| `CacheLLMProvider`               | llm_provider         | `library-standard`          |
+| `ClickhouseDumpStep`             | step                 | `library-telemetry`         |
+| `CompareKgStep`                  | step                 | `library-kg`                |
+| `CompareOtelSpansStep`           | step                 | `library-telemetry`         |
+| `ContextAssemblerPlugin`         | assembler            | `library-standard`          |
+| `ControlRpcProtocol`             | control_protocol     | `library-standard`          |
+| `ControlTools`                   | system_tool          | `library-standard`          |
+| `CopyDirRelatedState`            | related_state        | `library-standard`          |
+| `CotPlugin`                      | design_pattern       | `library-standard`          |
+| `DebugScriptPlugin`              | governance           | `library-standard`          |
+| `DeterministicLinearPlugin`      | design_pattern       | `library-standard`          |
+| `DeterministicParallelPlugin`    | design_pattern       | `library-standard`          |
+| `DeterministicSingleAgentPlugin` | design_pattern       | `library-standard`          |
+| `DropSummarizer`                 | summarizer           | `library-standard`          |
+| `EmbedStatesStep`                | step                 | `library-kg`                |
+| `EventsToOtelStep`               | step                 | `library-telemetry`         |
+| `ExportOtelStep`                 | step                 | `library-telemetry`         |
+| `FaultInjectMiddleware`          | infra_middleware     | `library-standard`          |
+| `GitWorktreeRelatedState`        | related_state        | `library-standard`          |
+| `HttpLayer`                      | stack_layer          | `library-ioa`               |
+| `HybridCheckpointStore`          | checkpoint_store     | `library-standard`          |
+| `InformUserTool`                 | system_tool          | `library-standard`          |
+| `InMemoryCheckpointStore`        | checkpoint_store     | `library-standard`          |
+| `IntrospectionPlugin`            | design_pattern       | `library-standard`          |
+| `JsonCheckpointStore`            | checkpoint_store     | `library-standard`          |
+| `LangChainSkillPlugin`           | skill_impl           | `library-skills`            |
+| `ListClickhouseSessionsStep`     | step                 | `library-telemetry`         |
+| `LlmCacheMiddleware`             | infra_middleware     | `library-standard`          |
+| `LlmSchedulerMiddleware`         | infra_middleware     | `library-standard`          |
+| `LlmSummarizer`                  | summarizer           | `library-standard`          |
+| `LocalAgentComm`                 | agent_comm           | `library-standard`          |
+| `LocalGroupAgentComm`            | agent_comm           | `library-standard`          |
+| `LocalToolProvider`              | tool_provider        | `library-standard`          |
+| `MCPToolProvider`                | tool_provider        | `library-ioa`               |
+| `ModeratedRoundsPlugin`          | design_pattern       | `library-standard`          |
+| `NativeObservabilityPlugin`      | observability        | `library-standard`          |
+| `NativeSkillPlugin`              | skill_impl           | `library-skills`            |
+| `Neo4jDumpStep`                  | step                 | `library-kg`                |
+| `Neo4jKGCodec`                   | codec                | `library-kg`                |
+| `Neo4jPushStep`                  | step                 | `library-kg`                |
+| `NormalizeEventsStep`            | step                 | `library-kg`                |
+| `NormalizeOtelStep`              | step                 | `library-kg`                |
+| `NoUndeclaredToolPlugin`         | governance           | `library-standard`          |
+| `OpenAILLMProvider`              | llm_provider         | `library-standard`          |
+| `OtelObservabilityPlugin`        | observability        | `library-telemetry`         |
+| `PlanExecutePlugin`              | design_pattern       | `library-standard`          |
+| `PlotMultilevelTrajectoryKGStep` | step                 | `library-kg`                |
+| `ReactPlugin`                    | design_pattern       | `library-standard`          |
+| `RegistryHitlContract`           | hitl_contract        | `library-standard`          |
+| `RegistryUserIOContract`         | user_io_contract     | `library-standard`          |
+| `ReleasePolicy`                  | a2a_delivery_policy  | `library-enforcement-proxy` |
+| `RequestHumanInputTool`          | system_tool          | `library-standard`          |
+| `RequestPolicy`                  | governance           | `library-enforcement-proxy` |
+| `RetryOnErrorPlugin`             | governance           | `library-standard`          |
+| `RunSkillScriptPlugin`           | skill_shell          | `library-skills`            |
+| `SampleGovernancePlugin`         | governance           | `library-standard`          |
+| `SemanticMemoryPlugin`           | memory               | `library-standard`          |
+| `SendTool`                       | engine_tool_provider | `library-standard`          |
+| `SendTool`                       | system_tool          | `library-standard`          |
+| `SinglePassPlugin`               | design_pattern       | `library-standard`          |
+| `SkillCatalogPlugin`             | skill_catalog        | `library-skills`            |
+| `SkillToolsPlugin`               | skill_tools          | `library-skills`            |
+| `SlidingWindowConversation`      | context_manager      | `library-standard`          |
+| `SlimAgentComm`                  | stack_layer          | `library-ioa`               |
+| `SpawnSubagentTool`              | system_tool          | `library-standard`          |
+| `SpawnSubagentTool`              | system_tool          | `library-standard`          |
+| `StackAgentComm`                 | agent_comm           | `library-standard`          |
+| `StackConversation`              | context_manager      | `library-standard`          |
+| `StateMachinePlugin`             | design_pattern       | `library-standard`          |
+| `SubagentSpawner`                | engine_tool_provider | `library-standard`          |
+| `SummarizingConversation`        | context_manager      | `library-standard`          |
+| `ThresholdCircuitBreaker`        | circuit_breaker      | `library-standard`          |
+| `ToyEchoMetric`                  | eval_metric          | `library-eval`              |
+| `TraceContextLayer`              | agent_comm           | `library-standard`          |
+| `TreeOfThoughtsPlugin`           | design_pattern       | `library-standard`          |
+| `UvicornWebServer`               | webserver            | `library-ioa`               |
+| `ValidateKgStep`                 | step                 | `library-kg`                |
+| `VerifyEventsStep`               | step                 | `library-kg`                |
+| `VerifyOtelStep`                 | step                 | `library-telemetry`         |
+| `WorkdirSandbox`                 | execute_sandbox      | `library-standard`          |
 
 ---
 

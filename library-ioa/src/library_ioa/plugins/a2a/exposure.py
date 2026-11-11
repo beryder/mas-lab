@@ -116,7 +116,7 @@ class A2AExposure:
 
             webserver = get_registry().create(
                 "webserver",
-                binding={"type": "uvicorn"},
+                binding=((endpoint or {}).get("a2a") or {}).get("webserver", {"type": "uvicorn"}),
             )
         self._webserver = webserver
 
