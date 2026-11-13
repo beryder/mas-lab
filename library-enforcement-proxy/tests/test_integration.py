@@ -14,14 +14,31 @@ from a2a.types import Message, Part, Task, TaskState, TaskStatus
 from library_ioa.plugins.a2a.delivery import DeliveryController
 from mas.library.enforcement_proxy.bridge import AuthorizationUnavailable, Bridge, canonical
 from mas.library.enforcement_proxy.plugins import ReleasePolicy, RequestPolicy
+from mas.runtime.boundary.connection import ConnectionBinding, ConnectionInfo, ConnectionTarget, Invocation
 from mas.runtime.driver.instance import RuntimeInstance
-from mas.runtime.engine.simulated import SimulatedEngine
+from mas.runtime.engine.llm_live import LiveLlmEngine
+from mas.runtime.engine.manifest_tool_provider import ManifestToolProvider
 from mas.runtime.kernel.config import KernelConfig
+from mas.runtime.schema.ingress import EngineIoReturn
 
 
 class _Identity(User):
     is_authenticated = True
     user_name = "worker"
+
+
+def resolved(ref="mcp:records", *, endpoint="https://records.test/mcp", principal="", transport="http"):
+    target = ConnectionTarget(endpoint=endpoint, principal=principal)
+    return ConnectionInfo(
+        ref.split(":", 1)[0], transport, uuid.uuid4().hex, 0, lambda expected: expected == target, ref
+    )
+
+
+def caller_context():
+    return ServerCallContext(
+        user=_Identity(),
+        state={"mas.delivery.connection": resolved("a2a:caller", endpoint="", principal="worker")},
+    )
 
 
 @pytest.fixture
@@ -40,6 +57,36 @@ def config(tmp_path, monkeypatch):
                 "certificate_file": "cert.pem",
                 "key_file": "key.pem",
                 "tools": {"write": {"destination": "worker", "kind": "tool", "tool": "write"}},
+                "bindings": [
+                    {
+                        "ref": "mcp:records",
+                        "destination": "worker",
+                        "protocol": "mcp",
+                        "transport": "http",
+                        "endpoint": "https://records.test/mcp",
+                    },
+                    {
+                        "ref": "a2a:worker",
+                        "destination": "worker",
+                        "protocol": "a2a",
+                        "transport": "http",
+                        "endpoint": "https://worker.test/inbox",
+                    },
+                    {
+                        "ref": "a2a:caller",
+                        "destination": "worker",
+                        "protocol": "a2a",
+                        "transport": "http",
+                        "principal": "worker",
+                    },
+                    {
+                        "ref": "a2a:push",
+                        "destination": "worker",
+                        "protocol": "a2a",
+                        "transport": "http",
+                        "endpoint": "https://worker.test/callback",
+                    },
+                ],
             },
             "worker": {"id": "id-worker"},
         },
@@ -81,6 +128,7 @@ async def test_publish_before_reference_only_authorization(config, monkeypatch, 
     result = await Bridge(config, "planner").authorize(
         destination="worker",
         kind="tool",
+        connection=resolved(),
         tool="write",
         payload=canonical({"arguments": {"value": "candidate-text"}}),
         context={"session_id": "session"},
@@ -103,7 +151,15 @@ async def test_no_release_on_failure(config, monkeypatch, mode):
     bridge.timeout = 0.01 if mode == "timeout" else 1
     if mode == "closed":
         bridge.close()
-    pending = asyncio.create_task(bridge.authorize(destination="worker", kind="delegation", payload=b"{}", context={}))
+    pending = asyncio.create_task(
+        bridge.authorize(
+            destination="worker",
+            kind="delegation",
+            payload=b"{}",
+            context={},
+            connection=resolved("a2a:worker", endpoint="https://worker.test/inbox"),
+        )
+    )
     if mode == "cancel":
         await asyncio.sleep(0)
         pending.cancel()
@@ -118,24 +174,49 @@ def test_native_governance_prevents_write_execution(config, monkeypatch, allowed
     calls = wire(monkeypatch, allow=allowed)
     policy = RequestPolicy(config, "planner")
 
-    class Engine(SimulatedEngine):
-        executions = 0
+    effects = []
+    owner = ConnectionBinding(
+        "mcp",
+        "http",
+        ConnectionTarget(endpoint="https://records.test/mcp"),
+        lambda *_: Invocation(lambda **_: effects.append("write") or "written"),
+        binding_ref="mcp:records",
+    )
 
-        def invoke(self, io):
-            if io.op == "TOOL_CALL":
-                self.executions += 1
-            return super().invoke(io)
+    class Provider:
+        origin = "external"
+        kind = "test"
+        provider_name = "records"
+        tools_claim = ("write",)
 
-    engine = Engine(
-        llm_next_step=lambda cid: "TOOL_CALL" if cid == 1 else "STOP",
-        llm_tool_intent=lambda cid: ("write", {"value": "kept"}),
-        stop_text="done",
+        def list_tools(self, **kwargs):
+            return [{"name": "write", "parameters": {"type": "object"}}]
+
+        def prepare_call(self, name, args, **kwargs):
+            return owner.prepare(name, args)
+
+        def call_tool(self, *args, **kwargs):
+            raise AssertionError("governed call must use its prepared binding")
+
+    engine = LiveLlmEngine(model="scripted", tool_provider=ManifestToolProvider([Provider()]))
+    steps = iter(["TOOL_CALL", "STOP"])
+    monkeypatch.setattr(
+        engine,
+        "_llm_call",
+        lambda io: EngineIoReturn(
+            correlation_id=io.correlation_id,
+            response_kind="MODEL_TEXT",
+            next_step=next(steps, "STOP"),
+            tool_name="write",
+            tool_arguments={"value": "kept"},
+            text="done",
+        ),
     )
     instance = RuntimeInstance.from_parts(engine=engine, config=KernelConfig(egress_governance_plugin=policy))
     instance.driver.agent_id = "planner"
     instance.capture_session_baseline()
     trace = instance.run_user_text("save a value")
-    assert engine.executions == int(allowed)
+    assert len(effects) == int(allowed)
     assert any(host == "adapter.test" for host, body in calls)
     assert trace.client_responses
 
@@ -152,7 +233,6 @@ async def test_release_binds_recipient_and_exact_content(config, monkeypatch, ki
         is_authenticated = True
         user_name = "worker"
 
-    identity = Identity()
     task = Task(
         id="task",
         context_id="conversation",
@@ -162,8 +242,9 @@ async def test_release_binds_recipient_and_exact_content(config, monkeypatch, ki
     released = await controller.release(
         task,
         kind=kind,
-        context=ServerCallContext(user=identity),
+        context=caller_context(),
         destination="https://worker.test/callback" if kind == "push" else "",
+        connection=resolved("a2a:push", endpoint="https://worker.test/callback") if kind == "push" else None,
     )
     assert released == task
     assert calls[1][1]["destination"] == "worker"
@@ -197,10 +278,10 @@ async def test_unknown_destination_and_evidence_limit_fail_before_transport(conf
     calls = wire(monkeypatch)
     bridge = Bridge(config, "planner")
     with pytest.raises(AuthorizationUnavailable, match="destination"):
-        await bridge.authorize(destination="unknown", kind="tool", payload=b"{}", context={})
+        await bridge.authorize(destination="unknown", kind="tool", payload=b"{}", context={}, connection=resolved())
     bridge.config["max_evidence_bytes"] = 1
     with pytest.raises(AuthorizationUnavailable, match="bound"):
-        await bridge.authorize(destination="worker", kind="tool", payload=b"{}", context={})
+        await bridge.authorize(destination="worker", kind="tool", payload=b"{}", context={}, connection=resolved())
     assert not calls
 
 
@@ -243,12 +324,11 @@ async def test_notifications_follow_final_delivery_decision(config, monkeypatch,
 
     policy.subscribe(broken)
     controller = DeliveryController("planner", policy)
-    user = _Identity()
     if allowed:
-        await controller.release(Task(id="task"), kind="send", context=ServerCallContext(user=user))
+        await controller.release(Task(id="task"), kind="send", context=caller_context())
     else:
         with pytest.raises(InvalidAgentResponseError):
-            await controller.release(Task(id="task"), kind="send", context=ServerCallContext(user=user))
+            await controller.release(Task(id="task"), kind="send", context=caller_context())
     assert len(observed) == 1
     assert (observed[0].payload is not None) == allowed
     policy.unsubscribe(observed.append)
@@ -262,11 +342,10 @@ async def test_publication_failure_and_wrong_producer_cannot_release(config, mon
 
     calls = wire(monkeypatch, missing=True)
     policy = ReleasePolicy(config, "planner")
-    user = _Identity()
     for name in ("unexpected", "planner"):
         controller = DeliveryController(name, policy)
         with pytest.raises(InvalidAgentResponseError):
-            await controller.release(Task(id="task"), kind="send", context=ServerCallContext(user=user))
+            await controller.release(Task(id="task"), kind="send", context=caller_context())
     assert len(calls) == 1
     await controller.aclose()
 
@@ -289,3 +368,69 @@ def test_example_mcp_write_and_read(tmp_path):
     assert {tool["name"] for tool in provider.list_tools()} == {"records_read", "records_write"}
     provider.call_tool("records_write", {"value": "saved value"})
     assert "saved value" in str(provider.call_tool("records_read", {}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "connection",
+    [
+        None,
+        resolved("mcp:other"),
+        resolved(endpoint="https://other.test/mcp"),
+        resolved("a2a:worker", endpoint="https://worker.test/inbox"),
+        resolved(transport="stdio"),
+    ],
+)
+async def test_missing_or_mismatched_destination_binding_never_publishes(config, monkeypatch, connection):
+    calls = wire(monkeypatch)
+    bridge = Bridge(config, "planner")
+    with pytest.raises(AuthorizationUnavailable, match="connection"):
+        await bridge.authorize(
+            destination="worker",
+            kind="tool",
+            tool="write",
+            payload=b"{}",
+            context={},
+            connection=connection,
+        )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_proposed_evidence_exports_safe_binding_fields_only(config, monkeypatch):
+    calls = wire(monkeypatch)
+    connection = resolved()
+    await Bridge(config, "planner").authorize(
+        destination="worker",
+        kind="tool",
+        tool="write",
+        payload=b"{}",
+        context={},
+        connection=connection,
+    )
+    span = calls[0][1]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    attrs = {a["key"]: a["value"]["stringValue"] for a in span["attributes"]}
+    body = json.loads(attrs["ioc.activity.body"])
+    assert body["connection"] == {
+        "protocol": "mcp",
+        "transport": "http",
+        "binding_ref": "mcp:records",
+        "binding_id": connection.binding_id,
+        "generation": 0,
+    }
+    assert calls[1][1]["transport"] == "http"
+    assert "records.test" not in json.dumps(calls)
+    assert "_matches_target" not in json.dumps(calls)
+
+
+def test_unregistered_bindings_fail_during_configuration(config, monkeypatch):
+    from pathlib import Path
+
+    calls = wire(monkeypatch)
+    path = Path(config)
+    data = json.loads(path.read_text())
+    data["identities"]["planner"].pop("bindings")
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="bindings"):
+        Bridge(config, "planner")
+    assert not calls

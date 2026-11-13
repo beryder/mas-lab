@@ -19,6 +19,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from mas.library.enforcement_proxy.connections import DestinationBindings
+from mas.runtime.boundary.connection import ConnectionInfo
 
 
 class AuthorizationUnavailable(RuntimeError):
@@ -70,6 +72,7 @@ class Bridge:
         self.config = json.loads(Path(config_file).read_text())
         self.agent = agent
         self.identity = self.config["identities"][agent]
+        self.bindings = DestinationBindings(self.identity.get("bindings"), self.config["identities"])
         self.timeout = float(self.config.get("timeout", 20))
         if not math.isfinite(self.timeout) or not 0 < self.timeout <= 60:
             raise ValueError("Mediation timeout must be finite, positive and at most 60 seconds")
@@ -103,14 +106,27 @@ class Bridge:
         return route
 
     async def authorize(
-        self, *, destination: str, kind: str, payload: bytes, context: dict, tool: str = ""
+        self, *, destination: str, kind: str, payload: bytes, context: dict, connection: ConnectionInfo, tool: str = ""
     ) -> DecisionRecord:
         if self._closed.is_set():
             raise AuthorizationUnavailable("Mediation integration is closed")
         if destination not in self.config["identities"] or kind not in {"delegation", "tool", "release"}:
             raise AuthorizationUnavailable("Unregistered authorization destination or kind")
+        try:
+            binding = self.bindings.validate(connection, destination, kind)
+        except ValueError as exc:
+            raise AuthorizationUnavailable(str(exc)) from None
+        # Destination validation precedes evidence publication and CF submission.
         # Freeze all content before publication. No policy may rewrite it.
-        envelope = canonical({"candidate": json.loads(payload), "context": context, "kind": kind, "tool": tool})
+        envelope = canonical(
+            {
+                "candidate": json.loads(payload),
+                "context": context,
+                "kind": kind,
+                "tool": tool,
+                "connection": binding,
+            }
+        )
         if len(envelope) > int(self.config.get("max_evidence_bytes", 1048576)):
             raise AuthorizationUnavailable("Candidate evidence exceeds the configured bound")
         trace, span, send_span = secrets.token_hex(16), secrets.token_hex(8), secrets.token_hex(8)
@@ -137,6 +153,7 @@ class Bridge:
             "evaluation_id": evaluation,
             "destination": destination,
             "kind": kind,
+            "transport": binding["transport"],
             "trace_id": trace,
             "span_id": span,
             "send_trace_id": trace,
