@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,6 +18,7 @@ from mas.runtime.driver.mocks import AutoCtxAssembler
 from mas.runtime.engine.simulated import SimulatedEngine
 from mas.runtime.kernel.config import KernelConfig
 from mas.runtime.kernel.orchestrator import RuntimeKernel
+from mas.runtime.layers.lifecycle import Lifecycle
 from mas.runtime.schema.ingress import (
     IngressSymbol,
     LifecycleAbort,
@@ -31,7 +33,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class RuntimeInstance:
+class RuntimeInstance(Lifecycle):
     """Wraps kernel + driver; exposes pause/resume/abort and user feed."""
 
     kernel: RuntimeKernel
@@ -44,6 +46,14 @@ class RuntimeInstance:
     # an entry agent driven directly by the user already keeps its own
     # history for free across turns. See WorkingMemoryConfig.
     working_memory: WorkingMemoryConfig = field(default_factory=WorkingMemoryConfig)
+    # Builds a new, idle instance of this agent: its own kernel, context, engine
+    # and observability. A host that serves several conversations (A2A
+    # ``contextId``) opens one per conversation, so no two share an engine.
+    # None means the instance cannot be rebuilt (an injected engine, a test).
+    conversation_factory: Callable[[], RuntimeInstance] | None = field(default=None, repr=False)
+    # Releases what building a conversation opened (comm chains). Set by whoever
+    # built it with ``conversation_factory``; the host calls it when it closes.
+    conversation_close: Callable[[], None] | None = field(default=None, repr=False)
     # Counts executions per ``<agent>-<turn>`` so reused turn ids stay unique.
     _exec_id_uses: dict[str, int] = field(default_factory=dict, repr=False)
 
@@ -181,6 +191,7 @@ class RuntimeInstance:
             spec,
             runtime_engine=runtime_engine,
             manifest_dir=resolved_base_dir,
+            agent_id=agent_id,
         )
         if obs_from_cli:
             obs_binding = obs_binding_override
@@ -203,6 +214,9 @@ class RuntimeInstance:
             enable_coordination=enable_coordination,
             enable_observability=enable_observability,
         )
+
+    def stop(self) -> None:
+        self.driver.stop()
 
     def pause(self, *, reason: str = "") -> DriverTrace:
         return self.driver.feed(LifecyclePause(reason=reason))

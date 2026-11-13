@@ -22,6 +22,7 @@ from mas.runtime.engine.llm_live import LiveLlmEngine
 from mas.runtime.engine.llm_output_limits import resolve_output_limits
 from mas.runtime.engine.llm_reasoning import reasoning_settings_from_manifest
 from mas.runtime.engine.llm_request import model_entry_from_manifest
+from mas.runtime.engine.tool_workers import ToolPlacement
 from mas.runtime.kernel.config import KernelConfig
 from mas.runtime.spec.model_ref import concrete_model, first_concrete, primary_model_binding
 
@@ -303,20 +304,38 @@ def build_engine(
     if reliability is None:
         from mas.runtime.reliability.policy import ReliabilitySettings
 
-        reliability = ReliabilitySettings.from_spec(spec, llm_proxy=llm_proxy)
-    llm_proxy["retry"] = reliability.llm_retry.to_mapping()
+        reliability = ReliabilitySettings.from_spec(spec)
+    from mas.ctl.session.llm_retry_env import llm_http_retry_overrides
+
+    retry_overlay = llm_http_retry_overrides() or None
     if cache_read_only:
         # Exclusive replay: answer from the cache only, never write, never call the provider.
         cache_read_override, cache_write_override = True, False
     strict_replay = _strict_replay(llm_proxy) or cache_read_only
 
-    api_base = str(llm_proxy.get("api_base") or "").strip()
+    infra_base = str(llm_proxy.get("api_base") or "").strip()
+    env_base = _env_llm_base()
+    api_base = infra_base or env_base
+    if not infra_base and env_base:
+        from mas.ctl.infra.env_resolve import warn_endpoint_from_env
+
+        warn_endpoint_from_env(
+            "OPENAI_BASE_URL" if os.environ.get("OPENAI_BASE_URL", "").strip() else "OPENAI_API_BASE", env_base
+        )
+    if infra_base and env_base and infra_base.rstrip("/") != env_base.rstrip("/"):
+        logger.warning(
+            "OPENAI_BASE_URL (%s) is ignored: the LLMProxy infra manifest sets api_base %s. "
+            "Edit proxy.api_base there, or drop it to use the environment variable.",
+            env_base,
+            infra_base,
+        )
     api_key_env = str(llm_proxy.get("api_key_env") or "OPENAI_API_KEY")
     http_timeout = float(llm_proxy["timeout"]) if llm_proxy.get("timeout") is not None else None
 
     if not api_base and not strict_replay:
         raise RuntimeError(
-            "No LLM configured: resolve infra (workspace infra_refs or --infra-ref). "
+            "No LLM configured: set proxy.api_base on an LLMProxy infra manifest "
+            "(workspace infra_refs or --infra-ref), or set OPENAI_BASE_URL. "
             "For offline CI, attach llm_cache replay (raise_on_miss) recorded against a live provider."
         )
     cache_raw = llm_proxy.get("cache_path")
@@ -324,11 +343,25 @@ def build_engine(
     cache_read = _cache_read_enabled(runtime_engine, override=cache_read_override)
     cache_write = _cache_write_enabled(runtime_engine, override=cache_write_override)
     llm_proxies = getattr(resolved, "llm_proxies", None) or {}
-    from mas.runtime.engine.infra_pipeline import infra_has_cache_step
-
-    has_cache_step = infra_has_cache_step(llm_proxy.get("pipeline"), llm_proxies)
-    cache_active = (cache_read or cache_write) and not has_cache_step
-    cache_path = Path(str(cache_raw)) if cache_raw else resolve_cache_path() if cache_active else None
+    if env_base and not infra_base:
+        # The provider is built from these dicts, not from ``api_base`` above, so the
+        # environment address has to be in them or the provider quietly uses OpenAI's.
+        llm_proxy["api_base"] = env_base
+        llm_proxies = {
+            name: ({**leaf, "api_base": env_base} if not str((leaf or {}).get("api_base") or "").strip() else leaf)
+            for name, leaf in llm_proxies.items()
+        }
+    cache_path = Path(str(cache_raw)) if cache_raw else resolve_cache_path()
+    _ensure_llm_cache_pipeline(
+        llm_proxy,
+        cache_read=cache_read,
+        cache_write=cache_write,
+        cache_read_only=cache_read_only,
+        cache_path=cache_path,
+        cache_read_override=cache_read_override,
+        cache_write_override=cache_write_override,
+        cache_disabled=_cache_settings(runtime_engine).get("enabled") is False,
+    )
     _require_leaf_credentials(llm_proxy, llm_proxies, strict_replay=strict_replay)
     if strict_replay:
         mode = "replay"
@@ -357,11 +390,8 @@ def build_engine(
         stream=stream,
         reasoning_effort=reasoning.effort,
         reasoning=reasoning.to_spec_dict(),
-        cache_path=cache_path,
-        wrap_cache=cache_active,
-        cache_read=cache_read,
-        cache_write=cache_write,
-        cache_raise_on_miss=cache_read_only,
+        wrap_cache=False,
+        retry_overlay=retry_overlay,
     )
     engine = LiveLlmEngine(
         ctx=ctx,
@@ -377,24 +407,89 @@ def build_engine(
         ),
         reasoning_effort=reasoning.effort,
         reasoning=reasoning.to_spec_dict(),
-        cache_path=cache_path,
+        cache_path=None,
         use_cache=False,
-        cache_read=cache_read,
-        cache_write=cache_write,
+        cache_read=False,
+        cache_write=False,
         stream=stream,
         use_tool_loop=tool_loop,
-        parallel_tool_calls=kernel_cfg.parallel_tool_calls,
+        tool_placement=ToolPlacement(worker=kernel_cfg.tool_worker, concurrency=kernel_cfg.tool_concurrency),
         llm_proxy=llm_proxy,
         llm_proxies=llm_proxies or None,
         http_timeout=http_timeout,
         llm_provider=llm_provider,
         reliability=reliability,
     )
+    from mas.runtime.layers.control import resolve_call_pipeline
+
     common, _destination = split_pipeline_layers(llm_proxy.get("pipeline") or [])
     engine.install_infra_pipeline(filter_pipeline_for_kind(common, "llm"))
-    tool_common, _tool_dest = split_pipeline_layers(list(resolved.tool_pipeline or []))
+    tool_steps = resolve_call_pipeline(spec, list(resolved.tool_pipeline or []), kind="tool")
+    tool_common, _tool_dest = split_pipeline_layers(tool_steps)
     engine.install_tool_pipeline(tool_common, destinations=resolved.tool_server_registry)
     return EngineSelection(engine=engine, mode=mode, reason=reason)
+
+
+def _llm_cache_step(pipeline: list[Any]) -> dict[str, Any] | None:
+    from mas.runtime.engine.infra_pipeline import is_cache_middleware
+
+    for step in pipeline:
+        if isinstance(step, dict) and is_cache_middleware(step):
+            return step
+    return None
+
+
+def _ensure_llm_cache_pipeline(
+    llm_proxy: dict[str, Any],
+    *,
+    cache_read: bool,
+    cache_write: bool,
+    cache_read_only: bool,
+    cache_path: Path | None,
+    cache_read_override: bool | None,
+    cache_write_override: bool | None,
+    cache_disabled: bool = False,
+) -> None:
+    """Put cache policy on the ``llm_cache`` infra step, not a provider wrap.
+
+    ``--cache-read`` / ``--cache-write`` / ``--cache-read-only`` overlay an
+    existing step. If there is no step and those flags (or RuntimeEngine
+    cache) ask for a cache, one is inserted. A step already in infra is left
+    as written when the CLI did not override it, except that RuntimeEngine
+    ``cache.enabled: false`` is a kill-switch and turns both flags off.
+    """
+    pipeline = [dict(step) if isinstance(step, dict) else step for step in (llm_proxy.get("pipeline") or [])]
+    step = _llm_cache_step(pipeline)
+    if step is None:
+        if not (cache_read or cache_write or cache_read_only):
+            return
+        params: dict[str, Any] = {
+            "allow_read": True if cache_read_only else cache_read,
+            "allow_write": False if cache_read_only else cache_write,
+            "raise_on_miss": bool(cache_read_only),
+        }
+        if cache_path is not None:
+            params["cache_path"] = str(cache_path)
+        pipeline.insert(
+            0,
+            {"middleware": "llm_cache", "for": ["llm"], "per": "all", "params": params},
+        )
+        llm_proxy["pipeline"] = pipeline
+        return
+    params = dict(step.get("params") or {})
+    if cache_disabled:
+        params["allow_read"] = False
+        params["allow_write"] = False
+    if cache_read_override is not None:
+        params["allow_read"] = cache_read_override
+    if cache_write_override is not None:
+        params["allow_write"] = cache_write_override
+    if cache_read_only:
+        params["allow_read"] = True
+        params["allow_write"] = False
+        params["raise_on_miss"] = True
+    step["params"] = params
+    llm_proxy["pipeline"] = pipeline
 
 
 def _bool_env(name: str) -> bool | None:
@@ -402,6 +497,15 @@ def _bool_env(name: str) -> bool | None:
     if raw is None or raw.strip() == "":
         return None
     return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_llm_base() -> str:
+    """OpenAI SDK ``OPENAI_BASE_URL``, then the older ``OPENAI_API_BASE`` name."""
+    for name in ("OPENAI_BASE_URL", "OPENAI_API_BASE"):
+        raw = os.environ.get(name)
+        if raw and raw.strip():
+            return raw.strip()
+    return ""
 
 
 def _cache_settings(runtime_engine: dict[str, Any]) -> dict[str, Any]:
@@ -424,7 +528,7 @@ def _cache_read_enabled(
     env = _bool_env("MAS_LLM_CACHE_READ")
     if env is not None:
         return env
-    return True
+    return False
 
 
 def _cache_write_enabled(
@@ -442,7 +546,7 @@ def _cache_write_enabled(
     env = _bool_env("MAS_LLM_CACHE_WRITE")
     if env is not None:
         return env
-    return True
+    return False
 
 
 def _stream_enabled(

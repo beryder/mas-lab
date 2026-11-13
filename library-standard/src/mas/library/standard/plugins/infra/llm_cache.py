@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mas.library.standard.lib.stack.call import LayerLifecycle
 from mas.runtime.engine.call_kinds import call_kind_matches
 from mas.runtime.engine.llm_cache import (
     load_cache,
@@ -22,6 +24,7 @@ from mas.runtime.schema.egress import InvokeEngineIo
 from mas.runtime.schema.ingress import EngineIoReturn
 
 _SHARED_LLM_CACHES: dict[str, dict[str, Any]] = {}
+_SHARED_LLM_CACHES_LOCK = threading.Lock()
 
 # First LlmCacheMiddleware in this process that asks for write_mode=replace
 # truncates cache_path. Later instances for the same path must load/merge so
@@ -48,15 +51,16 @@ def _cache_for_path(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
     key = str(path.expanduser().resolve())
-    cached = _SHARED_LLM_CACHES.get(key)
-    if cached is None:
-        cached = load_cache(path)
-        _SHARED_LLM_CACHES[key] = cached
-    return cached
+    with _SHARED_LLM_CACHES_LOCK:
+        cached = _SHARED_LLM_CACHES.get(key)
+        if cached is None:
+            cached = load_cache(path)
+            _SHARED_LLM_CACHES[key] = cached
+        return cached
 
 
 @dataclass
-class LlmCacheMiddleware:
+class LlmCacheMiddleware(LayerLifecycle):
     """Cache LLM_CALL results on disk — sits in front of live infra.
 
     allow_read / allow_write are independent (both default True, like a
@@ -67,6 +71,7 @@ class LlmCacheMiddleware:
 
     per = "all"
     call_kinds = ("llm",)
+    priority = 100
     stores_llm_responses = True
 
     inner: Any

@@ -18,7 +18,7 @@ from mas.ctl.overlay.merge import (
 from mas.runtime.boundary.agentcomm.protocol import AgentCommContract
 from mas.runtime.boundary.agentcomm.routing import AgentCommRoute
 from mas.runtime.boundary.context.manifest_context import routing_description_from_agent
-from mas.runtime.boundary.delegation.policy import delegation_targets
+from mas.runtime.boundary.delegation.policy import advertise_delegate_tools, delegation_targets
 from mas.runtime.contracts.tool_semantics import existing_attr
 from mas.runtime.engine.leaf import leaf_engine
 from mas.runtime.engine.llm_live import LiveLlmEngine
@@ -238,9 +238,7 @@ def apply_loaded_agent_patch(
     agent_patch = {key: value for key, value in patch.items() if key != _LOADED_AGENT_OVERRIDES}
     entry = find_agency_entry(mas_config, agent_id) if mas_config else None
     result = (
-        apply_agency_entry_overlay(
-            agent_manifest, entry or {"id": agent_id}, agent_patch=agent_patch
-        )
+        apply_agency_entry_overlay(agent_manifest, entry or {"id": agent_id}, agent_patch=agent_patch)
         if agent_patch
         else agent_manifest
     )
@@ -271,9 +269,7 @@ def _peer_manifests_for_ids(
         if peer_manifest is None:
             logger.warning("peer agent %r manifest not found: %s", peer_id, path)
             continue
-        out[peer_id] = apply_agency_entry_overlay(
-            peer_manifest, entry, mas_config=mas_config
-        )
+        out[peer_id] = apply_agency_entry_overlay(peer_manifest, entry, mas_config=mas_config)
     return out
 
 
@@ -310,11 +306,12 @@ def wire_entry_engine_delegation(
     routes: dict[str, AgentCommRoute] | None = None,
     peers: list[str] | None = None,
 ) -> None:
-    """Set enriched manifest on the entry engine and bind the delegation plugin when peers exist.
+    """Bind the send path when this agent has peers.
 
-    When peers exist, ``use_tool_loop`` is enabled on the leaf engine so the LLM can
-    emit ``delegate_to_*`` tool calls. A manifest or instantiation that set
-    ``use_tool_loop=False`` is overridden with a warning.
+    ``behavior.delegation_style: none`` hides leftover ``delegate_to_*``
+    tools from the model. The send path still runs. ``use_tool_loop`` is enabled only when those tools are
+    offered to the model. A manifest that set ``use_tool_loop=False`` is
+    overridden with a warning in that case.
     """
     if engine is None:
         return
@@ -342,13 +339,25 @@ def wire_entry_engine_delegation(
     # wanting a different delegation implementation registers a plugin under
     # the same ``delegation`` name; swapping job identifiers is not a
     # supported axis.
-    leaf.delegation = get_registry().instantiate_by_type(
-        "engine_tool_provider",
-        "delegation",
-        comm=comm,
-        routes=routes,
-        allowed_peers=peers,
-    )
+    plugins = getattr(getattr(leaf, "tool_provider", None), "system_plugins", None)
+    bound = plugins() if callable(plugins) else None
+    shared = bound.state_for_capability("delegation") if bound is not None else None
+    if shared is not None and callable(getattr(shared, "configure", None)):
+        # the granted delegation plugin is the engine's delegation: one instance, one set of peers
+        shared.configure(comm=comm, routes=routes, allowed_peers=peers)
+        leaf.delegation = shared
+    else:
+        # Keep send wired when delegation_style is none: it hides tools from the
+        # model, it does not remove the path a pattern uses to call a peer.
+        leaf.delegation = get_registry().instantiate_by_type(
+            "engine_tool_provider",
+            "delegation",
+            comm=comm,
+            routes=routes,
+            allowed_peers=peers,
+        )
+    if not advertise_delegate_tools(manifest):
+        return
     if hasattr(leaf, "use_tool_loop"):
         if not leaf.use_tool_loop:
             logger.warning(

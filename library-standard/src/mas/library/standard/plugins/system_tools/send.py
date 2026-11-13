@@ -10,7 +10,8 @@ calls. The target comes from the tool name; extra ``target`` or
 from __future__ import annotations
 
 import inspect
-from collections.abc import Sequence
+import threading
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 from weakref import WeakKeyDictionary
@@ -19,6 +20,7 @@ from mas.library.standard.lib.comm.payload import intents_honoured_by
 from mas.library.standard.lib.stack.layer import LinkIdentity
 from mas.runtime.boundary.agentcomm.protocol import AgentCommContract, AgentCommError, SendContext
 from mas.runtime.boundary.agentcomm.routing import AgentCommRoute
+from mas.runtime.boundary.connection import BindingUnavailable, PreparedOperation
 from mas.runtime.boundary.delegation.policy import (
     SEND_INTENTS,
     SEND_SEMANTICS,
@@ -26,11 +28,10 @@ from mas.runtime.boundary.delegation.policy import (
     openai_delegation_tools,
     parse_delegate_tool_name,
 )
+from mas.runtime.system_plugins import CallContext, InstanceSystemPlugin, SessionContext, UnknownSystemToolError
 
 _Prepare = tuple[AgentCommContract, str, str, str]
-_SEND_OPTIONAL = frozenset(
-    {"correlation_id", "caller_call_id", "context_id", "headers", "context"}
-)
+_SEND_OPTIONAL = frozenset({"correlation_id", "caller_call_id", "context_id", "headers", "context"})
 
 
 class SendToolContext(Protocol):
@@ -133,13 +134,49 @@ class SendTool:
     ) -> None:
         self._comm = comm
         self._routes = dict(routes or {})
-        self._allowed = frozenset(
-            str(peer) for peer in (allowed_peers or ()) if str(peer).strip()
-        )
+        self._binding_guard = threading.RLock()
+        self._allowed = frozenset(str(peer) for peer in (allowed_peers or ()) if str(peer).strip())
         self._accepted: WeakKeyDictionary[Any, dict[str, frozenset[str]]] = WeakKeyDictionary()
 
+    def retire_bindings(self) -> None:
+        for handler in (self._comm, *(route.handler for route in self._routes.values())):
+            retire = getattr(handler, "retire_bindings", None)
+            if callable(retire):
+                retire()
+
     def set_routes(self, routes: dict[str, AgentCommRoute]) -> None:
-        self._routes = dict(routes)
+        with self._binding_guard:
+            if self._routes != routes:
+                self.retire_bindings()
+                self._routes = dict(routes)
+
+    def configure(
+        self,
+        *,
+        comm: AgentCommContract | None,
+        routes: dict[str, AgentCommRoute] | None,
+        allowed_peers: Sequence[str] | None,
+    ) -> None:
+        """Wire the link, routes and leftover ``delegate_to_*`` names into an instance built before they were known."""
+        with self._binding_guard:
+            if self._comm is not comm or self._routes != (routes or {}):
+                self.retire_bindings()
+            self._comm = comm
+            self._routes = dict(routes or {})
+            self._allowed = frozenset(str(peer) for peer in (allowed_peers or ()) if str(peer).strip())
+
+    def adopt_wiring(self, other: SendTool) -> None:
+        """Take the wiring of another send tool, so one instance serves the engine and the plugin."""
+        self.configure(comm=other._comm, routes=other._routes, allowed_peers=other._allowed)
+
+    def offers(self, tool_name: str) -> bool:
+        """True for leftover ``delegate_to_<peer>`` names this instance lists.
+
+        That is ``list_tools`` / claims, not an execute lock. ``send`` still
+        delivers if a pattern or Python calls it with another dest.
+        """
+        target = parse_delegate_tool_name(tool_name)
+        return bool(target) and target in self._allowed
 
     def reset_session(self) -> None:
         return None
@@ -239,9 +276,7 @@ class SendTool:
         asend_fn = getattr(communication, "asend", None)
         names = {
             "send": _accepted_kwargs(send_fn),
-            "asend": (
-                _accepted_kwargs(asend_fn) if callable(asend_fn) else _accepted_kwargs(send_fn)
-            ),
+            "asend": (_accepted_kwargs(asend_fn) if callable(asend_fn) else _accepted_kwargs(send_fn)),
         }
         try:
             self._accepted[communication] = names
@@ -268,8 +303,6 @@ class SendTool:
         kind = str(intent or "task").strip().lower() or "task"
         if kind not in SEND_INTENTS:
             return f"[send] unknown intent {intent!r}"
-        if target not in self._allowed:
-            return f"[send] target {target!r} is not an allowed peer"
         communication, protocol = self._resolve(target, ctx=ctx)
         if kind not in intents_honoured_by(communication):
             return f"[send] intent {kind!r} is not supported on this link"
@@ -296,9 +329,7 @@ class SendTool:
         if "context_id" in accepted:
             extra["context_id"] = context_id
         if "context" in accepted:
-            extra["context"] = SendContext(
-                intent=intent, headers=dict(headers or {}), mode=mode
-            )
+            extra["context"] = SendContext(intent=intent, headers=dict(headers or {}), mode=mode)
         if headers is not None and "headers" in accepted:
             extra["headers"] = dict(headers)
         return extra
@@ -418,9 +449,7 @@ class SendTool:
             context_id=context_id,
         )
 
-    def _args_to_send(
-        self, tool_name: str, arguments: dict[str, Any] | None
-    ) -> tuple[str, str, str, str] | str:
+    def _args_to_send(self, tool_name: str, arguments: dict[str, Any] | None) -> tuple[str, str, str, str] | str:
         args = dict(arguments or {})
         named = parse_delegate_tool_name(tool_name)
         if named:
@@ -447,6 +476,27 @@ class SendTool:
             str(args.get("intent") or "task").strip().lower() or "task",
             str(args.get("context_id") or "").strip(),
         )
+
+    def prepare_call(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        ctx: SendToolContext | None = None,
+    ) -> PreparedOperation:
+        parsed = self._args_to_send(tool_name, arguments)
+        if isinstance(parsed, str):
+            raise BindingUnavailable(parsed)
+        target, message, intent, context_id = parsed
+        with self._binding_guard:
+            prepared = self._prepare(target, message, intent=intent, ctx=ctx)
+            if isinstance(prepared, str):
+                raise BindingUnavailable(prepared)
+            communication, _, payload, _ = prepared
+            prepare = getattr(communication, "prepare_send", None)
+            if not callable(prepare):
+                raise BindingUnavailable("The selected agent route has no resolved connection capability")
+            return prepare(target, payload, context_id=context_id)
 
     def call_delegate_tool(
         self,
@@ -543,4 +593,39 @@ class SendTool:
             correlation_id=correlation_id,
             caller_call_id=caller_call_id,
             ctx=ctx,
+        )
+
+
+class SendPlugin(InstanceSystemPlugin):
+    """System plugin for ``send``. The model still sees ``delegate_to_<id>``.
+
+    The bound :class:`SendTool` is the engine's delegation: ``configure`` (or ``adopt_wiring``) gives it
+    the link and the leftover ``delegate_to_<peer>`` names it offers. Those names are what the
+    model may see. ``send`` still delivers when a pattern or Python calls it.
+    """
+
+    name = "send"
+
+    def make_instance(self, session: SessionContext | None) -> SendTool:
+        return SendTool()
+
+    def claims(self, tool: str, *, state: object) -> bool:
+        return isinstance(state, SendTool) and state.offers(tool)
+
+    def call(
+        self,
+        tool: str,
+        args: Mapping[str, Any],
+        *,
+        state: object,
+        context: CallContext,
+    ) -> Any:
+        if not isinstance(state, SendTool) or not state.offers(tool):
+            raise UnknownSystemToolError(tool)
+        return state.call(
+            tool,
+            dict(args),
+            ctx=context.ctx,
+            correlation_id=context.correlation_id,
+            caller_call_id=context.caller_call_id,
         )

@@ -67,13 +67,24 @@ Infra `spec.protocol` / agent `spec.models[].kind` select the wire protocol (def
 | `local-group` | Unicast, anycast, rooms | `LocalGroupAgentComm` |
 | `stack` | Bottom-up layer bind | `StackAgentComm` |
 | `trace_context` | Child `traceparent` | `TraceContextLayer` |
-| `send` | System tool, off by default | `SendTool` |
 
 - Card: [agentcomm/local-group.md](agentcomm/local-group.md)
 - Card: [agentcomm/stack.md](agentcomm/stack.md)
 - Card: [agentcomm/trace-context.md](agentcomm/trace-context.md)
-- Card: [system_tools/send.md](system_tools/send.md)
 - Docs: [comm-stack.md](../../../../../../docs/references/comm-stack.md)
+
+## System plugins (`spec.system_plugins`)
+
+| ID | Advertised tools | Implementation |
+|----|------------------|----------------|
+| `send` | `delegate_to_<id>` (not `send`) | `SendPlugin` |
+| `inform_user` | `inform_user` | `InformUserPlugin` |
+| `request_human_input` | `request_human_input` | `RequestHumanInputPlugin` |
+| `pause_session` | `pause_session` and the control bundle | `PauseSessionPlugin` |
+| `subagents` | `create_subagent` | `SubagentsPlugin` |
+
+- Card: [system_tools/send.md](system_tools/send.md)
+- Docs: [system-plugins.md](../../../../../../docs/manifests/system-plugins.md)
 
 ## Control protocol (`mas.library.standard.plugins.control`)
 
@@ -101,6 +112,7 @@ from the manifest, not from `mas.runtime`.
 | ID | Alias | Implementation |
 |----|-------|----------------|
 | `gov_no_undeclared_tool` | `gov_no_undeclared_tool` | `NoUndeclaredToolPlugin` — BLOCK names not in this LLM call's `tools` list; chain rule (pass or stop) |
+| `gov_no_undeclared_peer` | `gov_no_undeclared_peer` | `NoUndeclaredPeerPlugin` — BLOCK leftover `delegate_to_*` dest not in this agent's `delegates_to` |
 | `retry_on_error@v1` | `retry_on_error` | `RetryOnErrorPlugin` — ingress `error_policy` classifier; egress PASSes |
 
 | `debug_script@v1` | `debug_script` | `DebugScriptPlugin` — gdb-like breakpoints on tool calls and results; observes, never blocks |
@@ -109,6 +121,7 @@ Card: [governance/debug-script.md](governance/debug-script.md).
 Example: [examples/governance/debug-script/](../../../../../examples/governance/debug-script/).
 
 - Card: [governance/no-undeclared-tool.md](governance/no-undeclared-tool.md)
+- Card: [governance/no-undeclared-peer.md](governance/no-undeclared-peer.md)
 - Card: [governance/retry-on-error.md](governance/retry-on-error.md)
 - Example (not an app): [examples/governance/undeclared-tool/](../../../../../examples/governance/undeclared-tool/)
 

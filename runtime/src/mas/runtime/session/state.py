@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -119,6 +120,28 @@ class Session:
     lineage_events: list[dict[str, Any]] = field(default_factory=list)
     _capturing_snapshot: bool = field(default=False, repr=False, compare=False)
 
+    def _system_plugins(self) -> Any:
+        engine = getattr(getattr(self.instance, "driver", None), "engine", None)
+        if engine is None:
+            return None
+        from mas.runtime.engine.leaf import leaf_engine
+
+        leaf = leaf_engine(engine)
+        provider = getattr(leaf, "tool_provider", None)
+        getter = getattr(provider, "system_plugins", None)
+        return getter() if callable(getter) else None
+
+    def _system_plugin_snapshot(self) -> dict[str, Any]:
+        plugins = self._system_plugins()
+        return dict(plugins.snapshot()) if plugins is not None else {}
+
+    def _restore_system_plugins(self, snapshot: Any) -> None:
+        if not isinstance(snapshot, dict):
+            return
+        bound = self._system_plugins()
+        if bound is not None:
+            bound.restore(snapshot)
+
     def pause(self, *, reason: str = "") -> None:
         """Mark the session paused. User turns must refuse until ``resume``."""
         self.status = SessionStatus.PAUSED
@@ -156,6 +179,23 @@ class Session:
 
         previous_status = self.status
         self.status = SessionStatus.CHECKPOINTING
+        seal = ExitStack()
+        try:
+            return self._write_checkpoint(store, label, previous_status, seal)
+        finally:
+            seal.close()
+            if self.status is SessionStatus.CHECKPOINTING:  # building the payload failed
+                self.status = (
+                    previous_status
+                    if previous_status in {SessionStatus.PAUSED, SessionStatus.TERMINATED}
+                    else SessionStatus.ACTIVE
+                )
+
+    def _write_checkpoint(
+        self, store: CheckpointStore, label: str, previous_status: SessionStatus, seal: ExitStack
+    ) -> Path:
+        # the spec is read with the log sealed: no write lands while this checkpoint is being taken
+        self._pin_spec(seal)
         payload: dict[str, Any] = {
             "version": 2,
             "label": label,
@@ -175,11 +215,15 @@ class Session:
                 "content_hash": self.manifest_ref.content_hash,
             },
         }
+        plugins = self._system_plugin_snapshot()
+        if plugins:
+            payload["system_plugins"] = plugins
         try:
             turn_label = label or f"turn-{payload['turn']:04d}"
             store_label = f"{self.session_id}-{turn_label}"
             path = store.save(payload, label=store_label)
         finally:
+            seal.close()
             if previous_status in {SessionStatus.PAUSED, SessionStatus.TERMINATED}:
                 self.status = previous_status
             else:
@@ -198,6 +242,23 @@ class Session:
             self.checkpoint_history = self.checkpoint_history[-self.checkpoint_policy.retention_n :]
         self._record_snapshot(payload, label=label)
         return path
+
+    def _pin_spec(self, seal: ExitStack | None = None) -> None:
+        """Bring ``manifest_ref`` and ``spec_revision`` to what the spec log holds, read as one.
+
+        With *seal* the log stays sealed until the stack closes. Without it the pair is read once, which is
+        the point in the log the snapshot is taken at.
+        """
+        log = self.spec_log
+        if log is None or not log.has(self.session_id):
+            return
+        if seal is not None:
+            manifest, revision = seal.enter_context(log.sealed(self.session_id))
+        else:
+            with log.sealed(self.session_id) as (manifest, revision):
+                pass
+        self.manifest_ref = ManifestRef.from_content(manifest)
+        self.spec_revision = revision
 
     def _record_snapshot(self, payload: dict[str, Any], *, label: str) -> None:
         tree = self.snapshot_tree
@@ -224,6 +285,7 @@ class Session:
                 spec=self.manifest_ref.content if self.manifest_ref else None,
                 spec_revision=self.spec_revision,
                 related=list(payload.get("related") or []),
+                system_plugins=dict(payload.get("system_plugins") or {}),
             ),
             live=True,
         )
@@ -254,6 +316,7 @@ class Session:
             self.session_id,
             payload.get("working_memory") or [],
         )
+        self._restore_system_plugins(payload.get("system_plugins"))
         self.checkpoint_history = self.checkpoint_history[: target_index + 1]
         self.controller.restore_turn(int(payload.get("turn", 0)))
         if automatic:
@@ -296,6 +359,7 @@ class Session:
         from mas.runtime.session.cow import capture_kernel
         from mas.runtime.session.snapshot import Snapshot, SnapshotRef, SnapshotTree
 
+        self._pin_spec()
         sync_working_memory_out(
             self.instance,
             memory_key=self.session_id,
@@ -315,6 +379,7 @@ class Session:
         if callable(freeze_session):
             wm_version = freeze_session(self.session_id)
         working_memory = self.working_memory.export_session(self.session_id)
+        system_plugins = self._system_plugin_snapshot()
         tree = self.snapshot_tree or SnapshotTree()
         parent = tree.live(self.session_id)
         seq = tree.next_seq(self.session_id) if hasattr(tree, "next_seq") else 0
@@ -338,6 +403,7 @@ class Session:
             wm_version=wm_version,
             seq=seq,
             related_fingerprints=[r.fingerprint for r in related],
+            system_plugins=system_plugins,
         )
         snap = Snapshot(
             ref=ref,
@@ -346,6 +412,7 @@ class Session:
             spec=self.manifest_ref.content if self.manifest_ref else None,
             spec_revision=self.spec_revision,
             related=related,
+            system_plugins=system_plugins,
         )
         self.lineage_events.append(
             {
@@ -427,6 +494,7 @@ class Session:
         from mas.runtime.boundary.related_state import restore_all
 
         restore_all(self.related_state, self.session_id, getattr(snapshot, "related", None))
+        self._restore_system_plugins(getattr(snapshot, "system_plugins", None))
 
     def persist_snapshot(self, snapshot: Any, store: CheckpointStore) -> Path:
         from mas.runtime.session.snapshot import persist

@@ -4,6 +4,7 @@ from typing import Any
 
 from mas.library.standard.lib.stack.layer import LinkIdentity
 from mas.runtime.boundary.agentcomm.protocol import AgentCommContract, AgentCommError, SendContext
+from mas.runtime.boundary.connection import Invocation, PreparedOperation
 
 from library_ioa.plugins.a2a.client import A2AClient
 
@@ -58,6 +59,10 @@ class A2AAgentComm(LinkIdentity, AgentCommContract):
         except Exception as exc:
             raise AgentCommError(str(exc)) from exc
 
+        return self._result_text(response)
+
+    @staticmethod
+    def _result_text(response: dict[str, Any]) -> str:
         status = str(response.get("status") or "").lower()
         if status in {"failed", "error"}:
             raise AgentCommError(str(response.get("error") or "remote A2A task failed"))
@@ -68,21 +73,13 @@ class A2AAgentComm(LinkIdentity, AgentCommContract):
             message = result.get("message")
             if isinstance(message, dict):
                 parts = message.get("parts") or []
-                text = "".join(
-                    str(part.get("text") or "")
-                    for part in parts
-                    if isinstance(part, dict)
-                )
+                text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
                 if text:
                     return text
             if isinstance(message, str):
                 return message
             parts = result.get("parts") or []
-            text = "".join(
-                str(part.get("text") or "")
-                for part in parts
-                if isinstance(part, dict)
-            )
+            text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
             if text:
                 return text
         return str(result)
@@ -107,6 +104,20 @@ class A2AAgentComm(LinkIdentity, AgentCommContract):
             headers=headers,
             context=context,
         )
+
+    def prepare_send(self, recipient: str, task: str, *, context_id: str = "") -> PreparedOperation:
+        # Use the ordinary send path so conversation policies, lifecycle and
+        # native causal metadata are retained. Only its SDK binding is pinned.
+        def call(**trace: Any) -> str:
+            return self.send(recipient, task, context_id=context_id, **trace)
+
+        async def acall(**trace: Any) -> str:
+            return await self.asend(recipient, task, context_id=context_id, **trace)
+
+        return self._client.prepare_message(recipient, task, context_id=context_id, sender=Invocation(call, acall))
+
+    def retire_bindings(self) -> None:
+        self._client.retire_bindings()
 
     def close(self) -> None:
         self._client.close()

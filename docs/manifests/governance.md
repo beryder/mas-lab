@@ -51,6 +51,7 @@ Without `error_recovery_plugin`, an `ERROR` follows `gov_ingress_profile` (defau
 | Plugin | Role | Card |
 |--------|------|------|
 | `gov_no_undeclared_tool` | Egress BLOCK if the tool name was not in this LLM call's `tools` list. | [no-undeclared-tool.md](https://github.com/ioc-project/mas-lab/blob/main/library-standard/src/mas/library/standard/plugins/governance/no-undeclared-tool.md) |
+| `gov_no_undeclared_peer` | Egress BLOCK if leftover `delegate_to_*` names a dest not in this agent's `delegates_to`. | [no-undeclared-peer.md](https://github.com/ioc-project/mas-lab/blob/main/library-standard/src/mas/library/standard/plugins/governance/no-undeclared-peer.md) |
 | `retry_on_error` | Ingress: `error_policy.<class>` maps to allow, retry, block, or skip. Egress always passes. | [retry-on-error.md](https://github.com/ioc-project/mas-lab/blob/main/library-standard/src/mas/library/standard/plugins/governance/retry-on-error.md) |
 | `backtrack_on_error` | Ingress: retries an identical engine error, then requests a session rollback once the repeat threshold is reached. Configure it with a `backtrack` stanza key. | [governance README](https://github.com/ioc-project/mas-lab/blob/main/library-standard/src/mas/library/standard/plugins/governance/README.md) |
 | `sample_governance` (alias of `sample`) | HITL before a tool call or before a tool result enters working memory. Also provides destructive-tool profiles. | [sample-governance.md](https://github.com/ioc-project/mas-lab/blob/main/library-standard/src/mas/library/standard/plugins/governance/sample-governance.md) |
@@ -66,6 +67,7 @@ The default chain is empty (`[]`).
 ```yaml
 governance:
   - gov_no_undeclared_tool
+  - gov_no_undeclared_peer
   - retry_on_error:
       error_recovery_plugin: retry_on_error
       error_policy:
@@ -77,9 +79,9 @@ governance:
 
 The `with-hardened` Control sets this up for you:
 
-1. It names `gov_no_undeclared_tool`, `budget` and `retry_on_error` in `spec.governance`.
+1. It names `gov_no_undeclared_tool`, `gov_no_undeclared_peer`, `budget` and `retry_on_error` in `spec.governance`.
 2. The `budget` plugin is set to `max_llm_calls: 50` and `max_tool_calls: 100`.
-3. The infra retry and the circuit breaker stay agent `spec.control` settings until the infra pipeline takes them (next release).
+3. Infra retry defaults to 4 LLM and 2 tool attempts. The circuit breaker is `standard:llm-proxy-hardened` (and `standard:tool-server-hardened`), not this Control.
 
 Details: [reliability.md](../references/reliability.md#with-hardened).
 
@@ -117,10 +119,17 @@ governance:
       hitl_on_tool: true
 ```
 
-`BLOCK` (and `hitl_mode: auto_deny`) refuses the tool and ends the turn with
-that denial as the user-visible answer. Optional steering is appended to the
-denial. `SKIP` injects optional steering as the tool result and lets the model
-continue. Walkthrough: [Tutorial 14](../tutorials/14-governance-hitl/README.md).
+Egress `BLOCK` on a tool call writes the policy reason as that call's tool
+result and returns the agent to evaluate. The next model call is its own
+envelope; it is not started from inside the blocked tool. In a parallel batch
+each call is authorized on its own: a denied sibling goes back to the model as
+its result, and the allowed calls still run. HITL and `TERMINATE` still stop
+the batch.
+
+`hitl_mode: auto_deny` refuses the tool and ends the turn with that denial as
+the user-visible answer. Optional steering is appended to the denial. `SKIP`
+injects optional steering as the tool result and lets the model continue.
+Walkthrough: [Tutorial 14](../tutorials/14-governance-hitl/README.md).
 
 ## See also
 

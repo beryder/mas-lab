@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -140,7 +141,14 @@ def instantiate_runtime(
     RuntimeInstance,
     JsonCheckpointStore | InMemoryCheckpointStore | LibraryHybridCheckpointStore | None,
 ]:
-    """Ctl-owned bootstrap: validate seeds/checkpoints, build instance, restore state."""
+    """Ctl-owned bootstrap: validate seeds/checkpoints, build instance, restore state.
+
+    The instance carries a ``conversation_factory`` that runs this bootstrap
+    again on a pristine copy of ``options``: a new conversation gets its own
+    kernel, context and engine, and starts without the checkpoint this one
+    restored. An injected ``options.engine`` cannot be rebuilt, so no factory.
+    """
+    rebuild = _conversation_options(options)
     seeds: list[MemorySeed] = []
     if options.memory_seed_path:
         if options.validate_manifests and validation_enabled():
@@ -398,7 +406,27 @@ def instantiate_runtime(
                 options.resolved_infra,
             ),
         )
+    if rebuild is not None:
+        instance.conversation_factory = lambda: instantiate_runtime(_conversation_options(rebuild), hitl=hitl)[0]
     return instance, store
+
+
+def _conversation_options(options: InstantiationOptions) -> InstantiationOptions | None:
+    """A copy of ``options`` that bootstrap may mutate, minus per-run restore state.
+
+    ``None`` when an engine was injected: it is one object and cannot be rebuilt.
+    """
+    if options.engine is not None:
+        return None
+    return replace(
+        options,
+        agent_manifest=copy.deepcopy(options.agent_manifest),
+        parent_spec=copy.deepcopy(options.parent_spec),
+        flavour_spec=copy.deepcopy(options.flavour_spec),
+        experiment_model_slots=dict(options.experiment_model_slots or {}) or None,
+        checkpoint_path=None,
+        checkpoint_dir=None,
+    )
 
 
 def resolve_archive_dir(options: InstantiationOptions) -> str:
@@ -614,9 +642,9 @@ def _entry_skill_base_dir(entry: dict[str, Any]) -> str | None:
 def _auto_inject_skill_tools(manifest: dict[str, Any] | None, *, auto_inject_scripts: bool = False) -> None:
     """Deprecated no-op.
 
-    Skill tools are system tools now: listing ``spec.skills`` injects
+    Skill tools are system plugins now: listing ``spec.skills`` injects
     ``activate_skill``; a skill with ``scripts/`` (or an explicit
-    ``kind: system`` / ``auto_inject`` opt-in) injects ``run_skill_script``.
+    ``spec.system_plugins`` / ``auto_inject`` opt-in) injects ``run_skill_script``.
     Kept so older tests/callers do not break.
     """
     _ = (manifest, auto_inject_scripts)

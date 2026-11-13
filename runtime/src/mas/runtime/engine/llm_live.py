@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from mas.runtime.boundary.connection import BindingUnavailable, ConnectionInfo, PreparedOperation
 from mas.runtime.boundary.context.assemble import (
     assemble_llm_messages,
     has_tool_results,
@@ -31,8 +34,10 @@ from mas.runtime.engine.llm_reasoning import (
 )
 from mas.runtime.engine.llm_request import extra_from_manifest, sampling_settings_from_manifest
 from mas.runtime.engine.textual_tool_calls import maybe_recover_textual_tool_calls, repair_merged_arg_keys
-from mas.runtime.engine.tool_dispatch import ToolExecutionError, execute_engine_tool
+from mas.runtime.engine.tool_dispatch import IN_FLIGHT_TOOL, InFlightTool, ToolExecutionError, execute_engine_tool
 from mas.runtime.engine.tools import openai_tools
+from mas.runtime.layers.lifecycle import Lifecycle, call_tick
+from mas.runtime.layers.probe import ToolProber
 from mas.runtime.reliability.classes import ClassifiedFailure, FailureClass
 from mas.runtime.reliability.classify import classify_llm_failure, classify_llm_http_error
 from mas.runtime.reliability.policy import ReliabilitySettings
@@ -50,7 +55,7 @@ class TruncatedCompletionError(RuntimeError):
 
 
 @dataclass
-class _InfraDispatchPort:
+class _InfraDispatchPort(ToolProber):
     """Innermost LLM/tool body for infra steps. Listed members only; not a public engine."""
 
     owns_call_identity: ClassVar[bool] = True
@@ -58,6 +63,9 @@ class _InfraDispatchPort:
 
     def invoke(self, io: InvokeEngineIo) -> EngineIoReturn:
         return self.engine._dispatch(io)
+
+    def probe_tool(self, name: str, arguments: Mapping[str, Any]) -> None:
+        self.engine.probe_tool(name, arguments)
 
     async def ainvoke(self, io: InvokeEngineIo) -> EngineIoReturn:
         return await self.engine._adispatch(io)
@@ -96,6 +104,9 @@ class _ToolDestRouter:
     fallback: Any
 
     def _pending_name(self, correlation_id: int) -> str:
+        in_flight = self.engine._in_flight()
+        if in_flight is not None:
+            return in_flight.name
         by_cid = self.engine._pending_tools_by_cid.get(correlation_id)
         if by_cid is not None:
             return str(by_cid[0] or "")
@@ -104,18 +115,17 @@ class _ToolDestRouter:
     def _advertised_by_server(self) -> dict[str, tuple[str, ...]]:
         from mas.runtime.engine.tool_routing import SYSTEM_TOOL_NAMES
 
-        provider = getattr(self.engine, "tool_provider", None)
-        routes = getattr(provider, "_routes", None)
-        if not isinstance(routes, dict):
-            return {}
-        buckets: dict[str, list[str]] = {}
-        for name, route in routes.items():
-            sid = str(getattr(route, "provider_name", "") or "")
-            token = str(name or "").strip()
-            if not sid or not token or token in SYSTEM_TOOL_NAMES:
-                continue
-            buckets.setdefault(sid, []).append(token)
-        return {sid: tuple(names) for sid, names in buckets.items()}
+        provider = self.engine.tool_provider
+        raw = provider.advertised_names_by_provider() if provider is not None else {}
+        buckets: dict[str, tuple[str, ...]] = {}
+        for sid, names in raw.items():
+            token = str(sid or "").strip()
+            kept = tuple(
+                name for name in (str(item).strip() for item in names or ()) if name and name not in SYSTEM_TOOL_NAMES
+            )
+            if token and kept:
+                buckets[token] = kept
+        return buckets
 
     def _owner(self, tool: str) -> str | None:
         from mas.runtime.engine.tool_routing import owner_for_tool, tool_server_claim
@@ -145,15 +155,11 @@ class _ToolDestRouter:
         return await self._pick(io.correlation_id).ainvoke(io)
 
     def exchange_preview(self, op: str, *, correlation_id: int = 0) -> str:
-        picked = self._pick(correlation_id)
-        preview = getattr(picked, "exchange_preview", None)
-        if callable(preview):
-            return str(preview(op, correlation_id=correlation_id) or "")
-        return ""
+        return str(self._pick(correlation_id).exchange_preview(op, correlation_id=correlation_id) or "")
 
 
 @dataclass
-class LiveLlmEngine:
+class LiveLlmEngine(Lifecycle):
     """EngineContract implementation — delegates chat completions to LLMProvider plugins."""
 
     ctx: AutoCtxAssembler | None = None
@@ -175,7 +181,7 @@ class LiveLlmEngine:
     cache_write: bool = True
     stream: bool = False
     use_tool_loop: bool = False
-    parallel_tool_calls: bool = True
+    tool_placement: Any | None = None  # ToolPlacement from the RuntimeEngine; None = defaults
     llm_proxy: dict[str, Any] | None = None
     llm_proxies: dict[str, dict[str, Any]] | None = None
     http_timeout: float | None = None
@@ -186,6 +192,7 @@ class LiveLlmEngine:
     tool_provider: Any | None = None
     llm_provider: Any | None = None
     reliability: ReliabilitySettings | None = None
+    _prepared_connections: dict[int, Any] = field(default_factory=dict, init=False, repr=False)
     _pending_tool: str = field(default="", init=False)
     _pending_tool_args: dict[str, Any] = field(default_factory=dict, init=False)
     _pending_tools_by_cid: dict[int, tuple[str, dict[str, Any]]] = field(default_factory=dict, init=False)
@@ -195,6 +202,43 @@ class LiveLlmEngine:
     _infra_stack: Any = field(default=None, init=False, repr=False)
     _tool_stack: Any = field(default=None, init=False, repr=False)
     _tool_destinations: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+
+    def prepare_tool_connection(self, name: str, arguments: dict[str, Any], correlation_id: int) -> ConnectionInfo:
+        from copy import deepcopy
+
+        from mas.runtime.boundary.connection import BindingUnavailable
+
+        self.release_tool_connection(correlation_id)
+        owner = None
+        if self.delegation is not None and (
+            self.delegation.offers(name)
+            if callable(getattr(self.delegation, "offers", None))
+            else self.delegation.is_delegate_tool(name)
+        ):
+            owner = self.delegation
+        else:
+            owner = next((c for c in self.engine_tool_contracts if c.claims(name)), self.tool_provider)
+        prepare = getattr(owner, "prepare_call", None)
+        if not callable(prepare):
+            raise BindingUnavailable("The selected provider cannot prepare a resolved connection")
+        operation = prepare(name, arguments, ctx=self.ctx)
+        self._prepared_connections[correlation_id] = (name, deepcopy(arguments), operation)
+        return operation.connection
+
+    def release_tool_connection(self, correlation_id: int) -> None:
+        entry = self._prepared_connections.pop(correlation_id, None)
+        if entry is not None:
+            entry[2].close()
+
+    def _prepared_for(self, correlation_id: int, name: str, arguments: dict[str, Any]) -> PreparedOperation | None:
+        from mas.runtime.boundary.connection import BindingUnavailable
+
+        entry = self._prepared_connections.get(correlation_id)
+        if entry is None:
+            return None
+        if entry[0] != name or entry[1] != arguments:
+            raise BindingUnavailable("The prepared call's arguments changed after authorization")
+        return entry[2]
 
     def set_scheduled_tool(self, name: str, arguments: dict[str, Any] | None = None) -> None:
         """Kernel-scheduled tool (e.g. plan-execute) — TLA: ToolMachine.tla."""
@@ -233,13 +277,15 @@ class LiveLlmEngine:
         self._budget = budget_from_manifest(self.manifest)
         spec = ((self.manifest or {}).get("spec") or {}) if isinstance(self.manifest, dict) else {}
         if self.reliability is None:
-            self.reliability = ReliabilitySettings.from_spec(spec, llm_proxy=self.llm_proxy)
-        self._circuit = self.reliability.circuit_breaker
+            self.reliability = ReliabilitySettings.from_spec(spec)
         if self.llm_provider is None:
             self.llm_provider = self._default_llm_provider()
         self.llm_provider = self._wrap_cache(self.llm_provider)
         # Tests that still inspect _model_access see the routed provider.
         self._model_access = self.llm_provider
+        from mas.runtime.layers.control import resolve_call_pipeline
+
+        self.install_tool_pipeline(resolve_call_pipeline(spec, [], kind="tool"))
 
     def install_infra_pipeline(self, pipeline: list[dict[str, Any]] | None) -> None:
         """Wrap this engine's LLM call with ``per: all`` steps only.
@@ -258,8 +304,7 @@ class LiveLlmEngine:
         if per_leaf:
             names = [middleware_id(step) or "?" for step in per_leaf]
             raise ValueError(
-                "install_infra_pipeline only accepts per: all steps; "
-                f"got destination {names}. Wrap those on each leaf."
+                f"install_infra_pipeline only accepts per: all steps; got destination {names}. Wrap those on each leaf."
             )
         if not common:
             self._infra_stack = None
@@ -299,16 +344,10 @@ class LiveLlmEngine:
             )
         dispatch = _InfraDispatchPort(self)
         dest_wraps: dict[str, Any] = {}
-        dest_servers = {
-            str(name): dict(server or {}) for name, server in (destinations or {}).items()
-        }
+        dest_servers = {str(name): dict(server or {}) for name, server in (destinations or {}).items()}
         for name, server in dest_servers.items():
             dest_steps = filter_pipeline_for_kind(
-                [
-                    dict(step)
-                    for step in server.get("pipeline") or []
-                    if isinstance(step, dict)
-                ],
+                [dict(step) for step in server.get("pipeline") or [] if isinstance(step, dict)],
                 "tool",
             )
             _, dest_only = split_pipeline_layers(dest_steps)
@@ -333,6 +372,31 @@ class LiveLlmEngine:
             return
         self._tool_stack = wrap_call_stack(inner, common)
 
+    def tick(self) -> None:
+        """Periodic work of the tool layers; run before each LLM call."""
+        call_tick(self._tool_stack)
+        for wrap in self._tool_destinations.values():
+            call_tick(wrap)
+
+    def probe_tool(self, name: str, arguments: Mapping[str, Any]) -> None:
+        """Run a tool the running spec took away, to see whether it is back. Not a model call: no budget, no layers."""
+        if self.tool_provider is None:
+            raise ToolExecutionError(f"no tool provider to probe {name!r}")
+        self.tool_provider.probe_tool(name, dict(arguments), ctx=self.ctx)
+
+    def stop(self) -> None:
+        from mas.runtime.layers.lifecycle import call_stop
+
+        for correlation_id in tuple(self._prepared_connections):
+            self.release_tool_connection(correlation_id)
+        call_stop(self.tool_provider)
+
+        call_stop(self._tool_stack)
+        call_stop(self._infra_stack)
+        call_stop(self.llm_provider)
+        for wrap in self._tool_destinations.values():
+            call_stop(wrap)
+
     def _default_llm_provider(self) -> Any:
         from mas.runtime.registry.llm_provider_registry import llm_provider_from_infra
 
@@ -341,9 +405,6 @@ class LiveLlmEngine:
         proxy.setdefault("api_key_env", self.api_key_env)
         if self.http_timeout is not None:
             proxy.setdefault("timeout", self.http_timeout)
-        if self.reliability is not None:
-            proxy["retry"] = self.reliability.llm_retry.to_mapping()
-            proxy["circuit_breaker"] = self.reliability.circuit_breaker
         return llm_provider_from_infra(
             proxy,
             manifest=self.manifest,
@@ -421,65 +482,101 @@ class LiveLlmEngine:
         """Pretty-print of exchange_snapshot (cache keys, tests). Not interchange."""
         return format_exchange_snapshot(self.exchange_snapshot(op, correlation_id=correlation_id))
 
+    def _take_pending_tool(self, correlation_id: int) -> tuple[str, dict[str, Any]]:
+        by_cid = self._pending_tools_by_cid.pop(correlation_id, None)
+        if by_cid is not None:
+            return str(by_cid[0] or "tool"), dict(by_cid[1] or {})
+        tool = self._pending_tool or "tool"
+        args = dict(self._pending_tool_args)
+        self._pending_tool = ""
+        self._pending_tool_args = {}
+        return tool, args
+
+    def _in_flight(self) -> InFlightTool | None:
+        """The tool this engine is dispatching in this context. A parent engine's call is not ours."""
+        current = IN_FLIGHT_TOOL.get()
+        return current if current is not None and current.owner == id(self) else None
+
+    def _begin_tool_call(self, io: InvokeEngineIo) -> contextvars.Token[InFlightTool | None] | None:
+        if io.op != "TOOL_CALL":
+            return None
+        if not self._budget.allow_tool():
+            return None
+        if self._in_flight() is not None:
+            return None
+        self._budget.note_tool()
+        name, arguments = self._take_pending_tool(io.correlation_id)
+        return IN_FLIGHT_TOOL.set(InFlightTool(owner=id(self), name=name, arguments=arguments))
+
+    def _tool_failure_return(self, io: InvokeEngineIo, exc: BaseException) -> EngineIoReturn:
+        classified = (
+            exc
+            if isinstance(exc, ClassifiedFailure)
+            else ClassifiedFailure(str(exc), failure_class=FailureClass.APPLICATION, code="TOOL_ERROR")
+        )
+        pending = self._in_flight()
+        tool = pending.name if pending else "tool"
+        text = self._unavailable_tool_observation(tool, classified)
+        return EngineIoReturn(
+            correlation_id=io.correlation_id,
+            response_kind="TOOL_RESULT",
+            next_step="LLM_CALL" if self.use_tool_loop else "STOP",
+            text=text,
+            failure_class=classified.failure_class.value,
+            failure_code=classified.code,
+            retry_attempts=classified.attempts,
+        )
+
     def invoke(self, io: InvokeEngineIo) -> EngineIoReturn:
-        if io.op == "TOOL_CALL" and self._tool_stack is not None:
-            return self._tool_stack.invoke(io)
-        if self._infra_stack is not None:
-            return self._infra_stack.invoke(io)
-        return self._dispatch(io)
+        if io.op == "LLM_CALL":
+            self.tick()
+        token = self._begin_tool_call(io)
+        try:
+            if io.op == "TOOL_CALL" and self._tool_stack is not None:
+                return self._tool_stack.invoke(io)
+            if self._infra_stack is not None:
+                return self._infra_stack.invoke(io)
+            return self._dispatch(io)
+        except (ClassifiedFailure, ToolExecutionError, BindingUnavailable) as exc:
+            if io.op != "TOOL_CALL":
+                raise
+            return self._tool_failure_return(io, exc)
+        finally:
+            if io.op == "TOOL_CALL":
+                self.release_tool_connection(io.correlation_id)
+            if token is not None:
+                IN_FLIGHT_TOOL.reset(token)
 
     def _dispatch(self, io: InvokeEngineIo) -> EngineIoReturn:
         if io.op == "LLM_CALL":
             return self._llm_call(io)
         if io.op == "TOOL_CALL":
-            if not self._budget.allow_tool():
-                return EngineIoReturn(
-                    correlation_id=io.correlation_id,
-                    response_kind="ERROR",
-                    next_step="STOP",
-                    text="Budget exceeded: max tool calls reached.",
-                )
-            self._budget.note_tool()
-            user = (self.ctx.last_user_text if self.ctx else "") or ""
-            by_cid = self._pending_tools_by_cid.pop(io.correlation_id, None)
-            if by_cid is not None:
-                tool, args = by_cid
+            pending = self._in_flight()
+            if pending is None:
+                if not self._budget.allow_tool():
+                    return EngineIoReturn(
+                        correlation_id=io.correlation_id,
+                        response_kind="ERROR",
+                        next_step="STOP",
+                        text="Budget exceeded: max tool calls reached.",
+                    )
+                self._budget.note_tool()
+                tool, args = self._take_pending_tool(io.correlation_id)
             else:
-                tool = self._pending_tool or "tool"
-                args = dict(self._pending_tool_args)
-                self._pending_tool = ""
-                self._pending_tool_args = {}
-            try:
-                text = execute_engine_tool(
-                    tool,
-                    delegation=self.delegation,
-                    ctx=self.ctx,
-                    user=user,
-                    arguments=args,
-                    tool_provider=self.tool_provider,
-                    engine_contracts=self.engine_tool_contracts,
-                    correlation_id=io.correlation_id,
-                    caller_call_id=io.call_id,
-                    retry_policy=None if self.reliability is None else self.reliability.tool_retry,
-                    circuit_breaker=getattr(self, "_circuit", None),
-                    agent_spec=((self.manifest or {}).get("spec") if isinstance(self.manifest, dict) else None),
-                )
-            except (ClassifiedFailure, ToolExecutionError) as exc:
-                classified = (
-                    exc
-                    if isinstance(exc, ClassifiedFailure)
-                    else ClassifiedFailure(str(exc), failure_class=FailureClass.APPLICATION, code="TOOL_ERROR")
-                )
-                text = self._unavailable_tool_observation(tool, classified)
-                return EngineIoReturn(
-                    correlation_id=io.correlation_id,
-                    response_kind="TOOL_RESULT",
-                    next_step="LLM_CALL" if self.use_tool_loop else "STOP",
-                    text=text,
-                    failure_class=classified.failure_class.value,
-                    failure_code=classified.code,
-                    retry_attempts=classified.attempts,
-                )
+                tool, args = pending.name, pending.arguments
+            user = (self.ctx.last_user_text if self.ctx else "") or ""
+            text = execute_engine_tool(
+                tool,
+                delegation=self.delegation,
+                ctx=self.ctx,
+                user=user,
+                arguments=args,
+                tool_provider=self.tool_provider,
+                engine_contracts=self.engine_tool_contracts,
+                correlation_id=io.correlation_id,
+                caller_call_id=io.call_id,
+                prepared=self._prepared_for(io.correlation_id, tool, args),
+            )
             return EngineIoReturn(
                 correlation_id=io.correlation_id,
                 response_kind="TOOL_RESULT",
@@ -501,66 +598,58 @@ class LiveLlmEngine:
         )
 
     async def ainvoke(self, io: InvokeEngineIo) -> EngineIoReturn:
-        if io.op == "TOOL_CALL" and self._tool_stack is not None:
-            return await self._tool_stack.ainvoke(io)
-        if self._infra_stack is not None:
-            return await self._infra_stack.ainvoke(io)
-        return await self._adispatch(io)
+        if io.op == "LLM_CALL":
+            self.tick()
+        token = self._begin_tool_call(io)
+        try:
+            if io.op == "TOOL_CALL" and self._tool_stack is not None:
+                return await self._tool_stack.ainvoke(io)
+            if self._infra_stack is not None:
+                return await self._infra_stack.ainvoke(io)
+            return await self._adispatch(io)
+        except (ClassifiedFailure, ToolExecutionError, BindingUnavailable) as exc:
+            if io.op != "TOOL_CALL":
+                raise
+            return self._tool_failure_return(io, exc)
+        finally:
+            if io.op == "TOOL_CALL":
+                self.release_tool_connection(io.correlation_id)
+            if token is not None:
+                IN_FLIGHT_TOOL.reset(token)
 
     async def _adispatch(self, io: InvokeEngineIo) -> EngineIoReturn:
         if io.op == "LLM_CALL":
             return await self._allm_call(io)
         if io.op == "TOOL_CALL":
-            if not self._budget.allow_tool():
-                return EngineIoReturn(
-                    correlation_id=io.correlation_id,
-                    response_kind="ERROR",
-                    next_step="STOP",
-                    text="Budget exceeded: max tool calls reached.",
-                )
-            self._budget.note_tool()
-            user = (self.ctx.last_user_text if self.ctx else "") or ""
-            by_cid = self._pending_tools_by_cid.pop(io.correlation_id, None)
-            if by_cid is not None:
-                tool, args = by_cid
+            pending = self._in_flight()
+            if pending is None:
+                if not self._budget.allow_tool():
+                    return EngineIoReturn(
+                        correlation_id=io.correlation_id,
+                        response_kind="ERROR",
+                        next_step="STOP",
+                        text="Budget exceeded: max tool calls reached.",
+                    )
+                self._budget.note_tool()
+                tool, args = self._take_pending_tool(io.correlation_id)
             else:
-                tool = self._pending_tool or "tool"
-                args = dict(self._pending_tool_args)
-                self._pending_tool = ""
-                self._pending_tool_args = {}
-            try:
-                from mas.runtime.engine.tool_dispatch import aexecute_engine_tool
+                tool, args = pending.name, pending.arguments
+            user = (self.ctx.last_user_text if self.ctx else "") or ""
+            from mas.runtime.engine.tool_dispatch import aexecute_engine_tool
 
-                text = await aexecute_engine_tool(
-                    tool,
-                    delegation=self.delegation,
-                    ctx=self.ctx,
-                    user=user,
-                    arguments=args,
-                    tool_provider=self.tool_provider,
-                    engine_contracts=self.engine_tool_contracts,
-                    correlation_id=io.correlation_id,
-                    caller_call_id=io.call_id,
-                    retry_policy=None if self.reliability is None else self.reliability.tool_retry,
-                    circuit_breaker=getattr(self, "_circuit", None),
-                    agent_spec=((self.manifest or {}).get("spec") if isinstance(self.manifest, dict) else None),
-                )
-            except (ClassifiedFailure, ToolExecutionError) as exc:
-                classified = (
-                    exc
-                    if isinstance(exc, ClassifiedFailure)
-                    else ClassifiedFailure(str(exc), failure_class=FailureClass.APPLICATION, code="TOOL_ERROR")
-                )
-                text = self._unavailable_tool_observation(tool, classified)
-                return EngineIoReturn(
-                    correlation_id=io.correlation_id,
-                    response_kind="TOOL_RESULT",
-                    next_step="LLM_CALL" if self.use_tool_loop else "STOP",
-                    text=text,
-                    failure_class=classified.failure_class.value,
-                    failure_code=classified.code,
-                    retry_attempts=classified.attempts,
-                )
+            text = await aexecute_engine_tool(
+                tool,
+                delegation=self.delegation,
+                ctx=self.ctx,
+                user=user,
+                arguments=args,
+                tool_provider=self.tool_provider,
+                engine_contracts=self.engine_tool_contracts,
+                correlation_id=io.correlation_id,
+                caller_call_id=io.call_id,
+                prepared=self._prepared_for(io.correlation_id, tool, args),
+                placement=self.tool_placement,
+            )
             return EngineIoReturn(
                 correlation_id=io.correlation_id,
                 response_kind="TOOL_RESULT",
@@ -859,7 +948,7 @@ class LiveLlmEngine:
                 if isinstance(args, dict):
                     args = repair_merged_arg_keys(args)
                 parsed.append((name, args))
-            if len(parsed) > 1 and self.parallel_tool_calls:
+            if len(parsed) > 1:
                 from mas.runtime.schema.ingress import ToolCallSpec
 
                 return EngineIoReturn(

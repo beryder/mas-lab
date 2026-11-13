@@ -22,6 +22,7 @@ def test_init_yes_creates_config_and_default_infra(monkeypatch, tmp_path: Path):
     assert infra.exists()
     assert "infra_refs" in cfg.read_text(encoding="utf-8")
     assert "OPENAI_API_KEY" in infra.read_text(encoding="utf-8")
+    assert "env:OPENAI_BASE_URL|https://api.openai.com/v1" in infra.read_text(encoding="utf-8")
     assert "Next:" in result.output
 
 
@@ -41,6 +42,7 @@ def test_init_local_creates_self_contained_project_config(tmp_path: Path):
         assert "infra/llmprovider.yaml" in cfg_text
         assert "~/.config/mas/infra" not in cfg_text
         assert "OPENAI_API_KEY" in infra.read_text(encoding="utf-8")
+        assert "env:OPENAI_BASE_URL|https://api.openai.com/v1" in infra.read_text(encoding="utf-8")
         assert "Initialized MAS project configuration." in result.output
 
 
@@ -80,7 +82,7 @@ def test_init_interactive_custom_provider(monkeypatch, tmp_path: Path):
     cfg_text = cfg.read_text(encoding="utf-8")
     infra_text = infra.read_text(encoding="utf-8")
     assert "myprovider" in cfg_text
-    assert "https://example.llm/v1" in infra_text
+    assert "env:MYPROVIDER_API_BASE|https://example.llm/v1" in infra_text
     assert "MY_API_KEY" in infra_text
     assert "trip-model: openai/gpt-4o-mini" in infra_text
     assert "mas-ctl run-mas library-samples/apps/trip-planner/mas.yaml" in result.output
@@ -141,6 +143,18 @@ def test_init_config_lists_every_option_commented_out(monkeypatch, tmp_path: Pat
         assert f"# {section}:" in text
 
 
+def test_api_base_for_file_names_the_env_var():
+    from mas.lab.cli.commands.init import _api_base_for_file
+
+    assert _api_base_for_file("https://api.openai.com/v1") == "env:OPENAI_BASE_URL|https://api.openai.com/v1"
+    assert _api_base_for_file("env:MY_BASE|http://localhost/v1") == "env:MY_BASE|http://localhost/v1"
+    assert _api_base_for_file("") == "env:OPENAI_BASE_URL|https://api.openai.com/v1"
+    assert (
+        _api_base_for_file("https://example.llm/v1", infra_name="myprovider")
+        == "env:MYPROVIDER_API_BASE|https://example.llm/v1"
+    )
+
+
 def test_render_without_infra_drops_infra_block_but_keeps_options():
     from mas.lab.cli.commands.init import _render_config_yaml
 
@@ -159,3 +173,25 @@ def test_init_quiet_prints_nothing_but_writes_files(monkeypatch, tmp_path: Path)
     assert result.output == ""
     assert (tmp_path / "mas" / "config.yaml").exists()
     assert (tmp_path / "mas" / "infra" / "llmprovider.yaml").exists()
+
+
+def test_api_base_env_name_is_a_shell_name_and_never_the_legacy_one():
+    from mas.lab.cli.commands.init import _api_base_for_file
+
+    assert _api_base_for_file("https://x.io/v1", infra_name="openai").startswith("env:OPENAI_PROXY_API_BASE|")
+    assert _api_base_for_file("https://x.io/v1", infra_name="1abc").startswith("env:LLM_1ABC_API_BASE|")
+
+
+def test_two_infra_names_with_the_same_slug_do_not_share_a_variable(tmp_path: Path):
+    from mas.lab.cli.commands.init import _api_base_for_file, _taken_api_base_names
+
+    (tmp_path / "my-provider.yaml").write_text(
+        "spec:\n  proxy:\n    api_base: env:MY_PROVIDER_API_BASE|https://a/v1\n", encoding="utf-8"
+    )
+    taken = _taken_api_base_names(tmp_path, "my_provider")
+    assert taken == {"MY_PROVIDER_API_BASE"}
+    assert _api_base_for_file("https://b/v1", infra_name="my_provider", taken=taken).startswith(
+        "env:MY_PROVIDER_API_BASE_2|"
+    )
+    # rewriting the infra file itself does not collide with its own variable
+    assert _taken_api_base_names(tmp_path, "my-provider") == frozenset()

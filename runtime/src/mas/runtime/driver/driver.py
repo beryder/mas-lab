@@ -12,7 +12,7 @@ import uuid
 from collections import deque
 from collections.abc import Sequence
 from contextlib import nullcontext
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -32,6 +32,7 @@ from mas.runtime.kernel.orchestrator import RuntimeKernel
 from mas.runtime.kernel.run_event import max_event_seq, new_run_events
 from mas.runtime.kernel.runtime_context import runtime_binding
 from mas.runtime.kernel.state import RunLedger
+from mas.runtime.layers.lifecycle import Lifecycle, call_stop
 from mas.runtime.machines.gov import gov_is_hitl_pending
 from mas.runtime.schema.egress import (
     EgressKind,
@@ -254,7 +255,7 @@ class DriverTrace:
 
 
 @dataclass
-class KernelDriver:
+class KernelDriver(Lifecycle):
     """Feed ingress, auto-dispatch egress to mock HITL/engine/ctx until quiescent."""
 
     kernel: RuntimeKernel
@@ -312,6 +313,7 @@ class KernelDriver:
     _gov_exchange_seq: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
+        self._bind_connections()
         if self.engine_pool is None and self.engine is not None:
             depth = self.kernel.config.engine_queue_depth if self.kernel is not None else DEFAULT_ENGINE_QUEUE_DEPTH
             self.engine_pool = EngineWorkerPool(worker=self._invoke_engine, max_depth=depth)
@@ -324,11 +326,25 @@ class KernelDriver:
                 if bound_manifest is not None:
                     self.ctx.manifest = bound_manifest
 
+    def _bind_connections(self) -> None:
+        resolver = existing_attr(self.engine, "prepare_tool_connection")
+        if self.kernel is not None and callable(resolver):
+            self.kernel.config = replace(
+                self.kernel.config,
+                resolve_connection=resolver,
+                release_connection=self.engine.release_tool_connection,
+            )
+
+    def stop(self) -> None:
+        call_stop(self.engine)
+
     def feed(self, event: IngressSymbol) -> DriverTrace:
+        self._bind_connections()
         with runtime_binding(self.coordination, self.observability), _inbound_scope(event):
             return self._feed_bounded(event)
 
     async def afeed(self, event: IngressSymbol) -> DriverTrace:
+        self._bind_connections()
         with runtime_binding(self.coordination, self.observability), _inbound_scope(event):
             return await self._afeed_bounded(event)
 
@@ -846,6 +862,7 @@ class KernelDriver:
         if len(ios) > 1 and all(sym.op == "TOOL_CALL" for sym in ios):
             parallel_group_id = str(uuid.uuid4())
             self._record_parallel_group_obs(ios, q, boundary="start", group_id=parallel_group_id)
+        staged: list[IngressSymbol] = []
         for sym in ios:
             ts_mono, ts_wall = _exchange_timestamp()
             engine_raw = _engine_payload_json(sym) if self.capture_engine_io else ""
@@ -933,6 +950,9 @@ class KernelDriver:
                         updates["parent_call_id"] = parent_call_id
                     sym = sym.model_copy(update=updates)
             if pool is not None:
+                if pool.pending_outbound() >= pool.max_depth:
+                    # The queue stages calls; a bigger batch runs in chunks, in order.
+                    staged.extend(pool.drain())
                 pool.submit(sym)
             else:
                 ret = self._invoke_engine(sym)
@@ -943,7 +963,7 @@ class KernelDriver:
             if parallel_group_id is not None:
                 self._record_parallel_group_obs(ios, q, boundary="end", group_id=parallel_group_id)
             return self._with_pending_steer(direct)
-        results = pool.drain()
+        results = [*staged, *pool.drain()]
         out: list[IngressSymbol] = []
         for sym, ret in zip(ios, results, strict=True):
             self._record_engine_return(trace, sym, ret)

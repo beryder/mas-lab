@@ -4,6 +4,7 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 from mas.ctl.manifest.mas_agent_merge import enrich_entry_agent_for_delegation, wire_entry_engine_delegation
 from mas.runtime.engine.llm_live import LiveLlmEngine
@@ -140,13 +141,14 @@ def test_wire_entry_engine_delegation_skips_when_delegates_to_empty():
 
     engine = _Engine()
     manifest = {
-        "metadata": {"name": "leaf"},
+        "metadata": {"name": "helper"},
         "spec": {
             "workflow": {
                 "entry": "leaf",
                 "nodes": [
-                    {"id": "leaf", "delegates_to": []},
-                    {"id": "other", "delegates_to": ["worker"]},
+                    {"id": "leaf", "delegates_to": ["other"]},
+                    {"id": "helper", "delegates_to": []},
+                    {"id": "other"},
                 ],
             }
         },
@@ -156,7 +158,7 @@ def test_wire_entry_engine_delegation_skips_when_delegates_to_empty():
         manifest,
         Path("."),
         comm=_StubComm(),
-        entry_agent_id="leaf",
+        entry_agent_id="helper",
     )
     assert engine.delegation is None
 
@@ -189,6 +191,85 @@ def test_wire_entry_engine_delegation_enables_tool_loop_on_leaf():
     assert engine.delegation is not None
     assert engine.manifest is manifest
     assert engine.delegation._allowed == frozenset({"peer"})
+
+
+def test_wire_entry_engine_delegation_entry_without_delegates_to_sends_to_nobody():
+    """Empty delegates_to offers no leftover tools; the pattern has no next hop."""
+    from mas.library.standard.plugins.design_patterns.linear import DeterministicLinearPlugin
+    from mas.runtime.boundary.delegation.policy import delegation_targets
+    from mas.runtime.kernel.config import KernelConfig
+
+    engine = LiveLlmEngine(manifest=None, use_tool_loop=False, use_cache=False)
+    manifest = {
+        "metadata": {"name": "mod"},
+        "spec": {
+            "design_pattern": {"type": "deterministic_linear"},
+            "workflow": {
+                "entry": "mod",
+                "nodes": [{"id": "mod"}, {"id": "a"}, {"id": "b"}],
+            },
+        },
+    }
+    wire_entry_engine_delegation(
+        engine,
+        manifest,
+        Path("."),
+        comm=_StubComm(),
+        entry_agent_id="mod",
+    )
+    peers = delegation_targets(manifest, agent_id="mod")
+    pattern = DeterministicLinearPlugin()._participants_from_spec(
+        KernelConfig(agent_spec=manifest["spec"], agent_id="mod")
+    )
+    assert peers == pattern == []
+    assert engine.delegation is None
+    names = {t["function"]["name"] for t in openai_tools(manifest, agent_id="mod")}
+    assert "delegate_to_a" not in names
+    assert "delegate_to_b" not in names
+
+
+def test_a_pattern_on_a_non_entry_agent_calls_its_own_peers():
+    from mas.runtime.boundary.delegation.policy import delegation_targets
+    from mas.runtime.engine.llm_live import LiveLlmEngine
+    from mas.runtime.engine.tool_dispatch import execute_engine_tool
+    from mas.runtime.engine.tools import openai_tools
+
+    engine = LiveLlmEngine(manifest=None, use_tool_loop=False, use_cache=False)
+    manifest = {
+        "metadata": {"name": "flights"},
+        "spec": {
+            "design_pattern": {"type": "deterministic_linear"},
+            "workflow": {
+                "entry": "planner",
+                "nodes": [
+                    {"id": "planner", "delegates_to": ["flights", "hotels"]},
+                    {"id": "flights", "delegates_to": ["hotels"]},
+                    {"id": "hotels"},
+                ],
+            },
+        },
+    }
+    wire_entry_engine_delegation(
+        engine,
+        manifest,
+        Path("."),
+        comm=_StubComm(),
+        entry_agent_id="flights",
+    )
+    assert engine.delegation is not None
+    names = {t["function"]["name"] for t in openai_tools(manifest, agent_id="flights")}
+    assert names == {"delegate_to_hotels"}
+    assert delegation_targets(manifest, agent_id="flights") == ["hotels"]
+    assert (
+        execute_engine_tool(
+            "delegate_to_hotels",
+            delegation=engine.delegation,
+            arguments={"task": "book"},
+        )
+        == "ok"
+    )
+    assert not engine.delegation.offers("delegate_to_planner")
+    assert engine.delegation.send("planner", "no") == "ok"
 
 
 def test_reset_engine_delegation_does_not_suppress_repeated_delegation():
@@ -706,3 +787,63 @@ def test_create_agent_runtime_applies_mas_overlay_context(monkeypatch, tmp_path:
 
     leaf = leaf_engine(instance.driver.engine)
     assert leaf.manifest["spec"]["context"]["role"] == "from overlay"
+    assert instance.driver.kernel.config.agent_id == "moderator"
+
+
+def _send_plugin_engine(*, wire_first: bool):
+    """A live engine whose manifest tools grant the ``send`` plugin, wired in either order."""
+    from mas.ctl.manifest.mas_agent_merge import wire_entry_engine_delegation
+    from mas.runtime.engine.llm_live import LiveLlmEngine
+    from mas.runtime.engine.manifest_tool_provider import attach_manifest_tools
+
+    engine = LiveLlmEngine(manifest=None, use_tool_loop=False, use_cache=False)
+    spec = {
+        "system_plugins": ["send"],
+        "workflow": {"entry": "entry", "nodes": [{"id": "entry", "delegates_to": ["peer"]}]},
+    }
+    manifest = {"metadata": {"name": "entry"}, "spec": spec}
+
+    def wire() -> None:
+        wire_entry_engine_delegation(engine, manifest, Path("."), comm=_StubComm(), entry_agent_id="entry")
+
+    def attach() -> None:
+        attach_manifest_tools(engine, manifest, Path("."))
+
+    for step in (wire, attach) if wire_first else (attach, wire):
+        step()
+    return engine
+
+
+@pytest.mark.parametrize("wire_first", [True, False])
+def test_delegation_is_the_send_plugin_instance_whichever_is_wired_first(wire_first: bool):
+    from mas.runtime.engine.leaf import leaf_engine
+
+    leaf = leaf_engine(_send_plugin_engine(wire_first=wire_first))
+    bound = leaf.tool_provider.system_plugins()
+    shared = bound.state_for_capability("delegation")
+    assert leaf.delegation is shared
+    assert shared._allowed == frozenset({"peer"})
+    assert bound.claims("delegate_to_peer") and not bound.claims("delegate_to_stranger")
+
+
+def test_delegation_style_none_hides_the_tools_but_still_wires_send():
+    from mas.runtime.boundary.delegation.policy import delegation_targets
+    from mas.runtime.engine.llm_live import LiveLlmEngine
+    from mas.runtime.engine.tools import openai_tools
+
+    engine = LiveLlmEngine(manifest=None, use_tool_loop=False, use_cache=False)
+    manifest = {
+        "metadata": {"name": "planner"},
+        "spec": {
+            "behavior": {"delegation_style": "none"},
+            "workflow": {
+                "entry": "planner",
+                "nodes": [{"id": "planner", "delegates_to": ["hotels"]}, {"id": "hotels"}],
+            },
+        },
+    }
+    wire_entry_engine_delegation(engine, manifest, Path("."), comm=_StubComm(), entry_agent_id="planner")
+    assert delegation_targets(manifest, agent_id="planner") == ["hotels"]
+    assert engine.delegation is not None
+    assert engine.use_tool_loop is False
+    assert not {t["function"]["name"] for t in openai_tools(manifest, agent_id="planner")}

@@ -67,12 +67,6 @@ practical examples.
 | `InMemoryCheckpointStore` | `mas.library.standard.plugins.checkpoint` | `library-standard` |
 | `JsonCheckpointStore`     | `mas.library.standard.plugins.checkpoint` | `library-standard` |
 
-### Circuit_Breaker
-
-| Class                     | Full module path                                           | Library            |
-| ------------------------- | ---------------------------------------------------------- | ------------------ |
-| `ThresholdCircuitBreaker` | `mas.library.standard.plugins.reliability.circuit_breaker` | `library-standard` |
-
 ### Codec
 
 | Class          | Full module path        | Library      |
@@ -135,6 +129,7 @@ practical examples.
 | `BacktrackOnErrorPlugin` | `mas.library.standard.plugins.governance.backtrack_on_error` | `library-standard`          |
 | `BudgetPlugin`           | `mas.library.standard.plugins.governance.budget`             | `library-standard`          |
 | `DebugScriptPlugin`      | `mas.library.standard.plugins.governance.debug_script`       | `library-standard`          |
+| `NoUndeclaredPeerPlugin` | `mas.library.standard.plugins.governance.no_undeclared_peer` | `library-standard`          |
 | `NoUndeclaredToolPlugin` | `mas.library.standard.plugins.governance.no_undeclared_tool` | `library-standard`          |
 | `RequestPolicy`          | `mas.library.enforcement_proxy.plugins`                      | `library-enforcement-proxy` |
 | `RetryOnErrorPlugin`     | `mas.library.standard.plugins.governance.retry_on_error`     | `library-standard`          |
@@ -154,13 +149,23 @@ practical examples.
 | `AutoApproveResponder` | `mas.library.standard.plugins.hitl.responders` | `library-standard` |
 | `AutoDenyResponder`    | `mas.library.standard.plugins.hitl.responders` | `library-standard` |
 
-### Infra_Middleware
+### Layer
 
-| Class                    | Full module path                                   | Library            |
-| ------------------------ | -------------------------------------------------- | ------------------ |
-| `FaultInjectMiddleware`  | `mas.library.standard.plugins.infra.fault_inject`  | `library-standard` |
-| `LlmCacheMiddleware`     | `mas.library.standard.plugins.infra.llm_cache`     | `library-standard` |
-| `LlmSchedulerMiddleware` | `mas.library.standard.plugins.infra.llm_scheduler` | `library-standard` |
+| Class                    | Full module path                                      | Library            |
+| ------------------------ | ----------------------------------------------------- | ------------------ |
+| `A2ALayer`               | `library_ioa.plugins.a2a.layer`                       | `library-ioa`      |
+| `CircuitBreakerLayer`    | `mas.library.standard.plugins.layers.circuit_breaker` | `library-standard` |
+| `CorruptLayer`           | `mas.library.standard.plugins.stack.impair`           | `library-standard` |
+| `DelayLayer`             | `mas.library.standard.plugins.stack.impair`           | `library-standard` |
+| `DropLayer`              | `mas.library.standard.plugins.stack.impair`           | `library-standard` |
+| `FailLayer`              | `mas.library.standard.plugins.stack.impair`           | `library-standard` |
+| `FaultInjectMiddleware`  | `mas.library.standard.plugins.infra.fault_inject`     | `library-standard` |
+| `HttpLayer`              | `library_ioa.plugins.http_layer.transport`            | `library-ioa`      |
+| `LlmCacheMiddleware`     | `mas.library.standard.plugins.infra.llm_cache`        | `library-standard` |
+| `LlmSchedulerMiddleware` | `mas.library.standard.plugins.infra.llm_scheduler`    | `library-standard` |
+| `ReplayLayer`            | `mas.library.standard.plugins.stack.impair`           | `library-standard` |
+| `RetryLayer`             | `mas.library.standard.plugins.layers.retry`           | `library-standard` |
+| `SlimAgentComm`          | `library_ioa.plugins.slim.agent_comm`                 | `library-ioa`      |
 
 ### Llm_Provider
 
@@ -215,14 +220,6 @@ practical examples.
 | ------------------ | ------------------------------------- | ---------------- |
 | `SkillToolsPlugin` | `mas.library.skills.plugins.sk_tools` | `library-skills` |
 
-### Stack_Layer
-
-| Class           | Full module path                           | Library       |
-| --------------- | ------------------------------------------ | ------------- |
-| `A2ALayer`      | `library_ioa.plugins.a2a.layer`            | `library-ioa` |
-| `HttpLayer`     | `library_ioa.plugins.http_layer.transport` | `library-ioa` |
-| `SlimAgentComm` | `library_ioa.plugins.slim.agent_comm`      | `library-ioa` |
-
 ### Step
 
 | Class                            | Full module path                                       | Library             |
@@ -250,16 +247,17 @@ practical examples.
 | `DropSummarizer` | `mas.library.standard.plugins.context.summarizer` | `library-standard` |
 | `LlmSummarizer`  | `mas.library.standard.plugins.context.summarizer` | `library-standard` |
 
-### System_Tool
+### System_Plugin
 
-| Class                   | Full module path                                                | Library            |
-| ----------------------- | --------------------------------------------------------------- | ------------------ |
-| `ControlTools`          | `mas.library.standard.plugins.system_tools.control`             | `library-standard` |
-| `InformUserTool`        | `mas.library.standard.plugins.system_tools.inform_user`         | `library-standard` |
-| `RequestHumanInputTool` | `mas.library.standard.plugins.system_tools.request_human_input` | `library-standard` |
-| `SendTool`              | `mas.library.standard.plugins.system_tools.send`                | `library-standard` |
-| `SpawnSubagentTool`     | `mas.library.standard.plugins.system_tools.spawn_subagent`      | `library-standard` |
-| `SpawnSubagentTool`     | `mas.library.standard.plugins.system_tools.spawn_subagent`      | `library-standard` |
+| Class                        | Full module path                                                | Library            |
+| ---------------------------- | --------------------------------------------------------------- | ------------------ |
+| `ActivateSkillPlugin`        | `mas.library.skills.plugins.system_tools`                       | `library-skills`   |
+| `InformUserPlugin`           | `mas.library.standard.plugins.system_tools.inform_user`         | `library-standard` |
+| `PauseSessionPlugin`         | `mas.library.standard.plugins.system_tools.control`             | `library-standard` |
+| `RequestHumanInputPlugin`    | `mas.library.standard.plugins.system_tools.request_human_input` | `library-standard` |
+| `RunSkillScriptSystemPlugin` | `mas.library.skills.plugins.system_tools`                       | `library-skills`   |
+| `SendPlugin`                 | `mas.library.standard.plugins.system_tools.send`                | `library-standard` |
+| `SubagentsPlugin`            | `mas.library.standard.plugins.system_tools.spawn_subagent`      | `library-standard` |
 
 ### Tool_Provider
 
@@ -281,6 +279,25 @@ practical examples.
 | `AuthenticatedWebServer` | `mas.library.enforcement_proxy.webserver` | `library-enforcement-proxy` |
 | `UvicornWebServer`       | `library_ioa.plugins.webserver`           | `library-ioa`               |
 
+### Deprecated plugin types
+
+A plugin type listed here is a retired spelling. Lookups under it still resolve to the current row and warn once; a library that registers under it keeps loading. It will be dropped in a later release.
+
+| Deprecated type    | Use type | Class                    | Library            |
+| ------------------ | -------- | ------------------------ | ------------------ |
+| `stack_layer`      | `layer`  | `A2ALayer`               | `library-ioa`      |
+| `circuit_breaker`  | `layer`  | `CircuitBreakerLayer`    | `library-standard` |
+| `stack_layer`      | `layer`  | `CorruptLayer`           | `library-standard` |
+| `stack_layer`      | `layer`  | `DelayLayer`             | `library-standard` |
+| `stack_layer`      | `layer`  | `DropLayer`              | `library-standard` |
+| `stack_layer`      | `layer`  | `FailLayer`              | `library-standard` |
+| `infra_middleware` | `layer`  | `FaultInjectMiddleware`  | `library-standard` |
+| `stack_layer`      | `layer`  | `HttpLayer`              | `library-ioa`      |
+| `infra_middleware` | `layer`  | `LlmCacheMiddleware`     | `library-standard` |
+| `infra_middleware` | `layer`  | `LlmSchedulerMiddleware` | `library-standard` |
+| `stack_layer`      | `layer`  | `ReplayLayer`            | `library-standard` |
+| `stack_layer`      | `layer`  | `SlimAgentComm`          | `library-ioa`      |
+
 ---
 
 ## All Plugins — Alphabetical Index
@@ -289,7 +306,8 @@ practical examples.
 | -------------------------------- | -------------------- | --------------------------- |
 | `A2AAgentComm`                   | agent_comm           | `library-ioa`               |
 | `A2AExposure`                    | agent_expose         | `library-ioa`               |
-| `A2ALayer`                       | stack_layer          | `library-ioa`               |
+| `A2ALayer`                       | layer                | `library-ioa`               |
+| `ActivateSkillPlugin`            | system_plugin        | `library-skills`            |
 | `ADKSkillPlugin`                 | skill_impl           | `library-skills`            |
 | `AuthenticatedWebServer`         | webserver            | `library-enforcement-proxy` |
 | `AutoApproveResponder`           | hitl_responder       | `library-standard`          |
@@ -298,34 +316,38 @@ practical examples.
 | `BacktrackOnErrorPlugin`         | governance           | `library-standard`          |
 | `BudgetPlugin`                   | governance           | `library-standard`          |
 | `CacheLLMProvider`               | llm_provider         | `library-standard`          |
+| `CircuitBreakerLayer`            | layer                | `library-standard`          |
 | `ClickhouseDumpStep`             | step                 | `library-telemetry`         |
 | `CompareKgStep`                  | step                 | `library-kg`                |
 | `CompareOtelSpansStep`           | step                 | `library-telemetry`         |
 | `ContextAssemblerPlugin`         | assembler            | `library-standard`          |
 | `ControlRpcProtocol`             | control_protocol     | `library-standard`          |
-| `ControlTools`                   | system_tool          | `library-standard`          |
 | `CopyDirRelatedState`            | related_state        | `library-standard`          |
+| `CorruptLayer`                   | layer                | `library-standard`          |
 | `CotPlugin`                      | design_pattern       | `library-standard`          |
 | `DebugScriptPlugin`              | governance           | `library-standard`          |
+| `DelayLayer`                     | layer                | `library-standard`          |
 | `DeterministicLinearPlugin`      | design_pattern       | `library-standard`          |
 | `DeterministicParallelPlugin`    | design_pattern       | `library-standard`          |
 | `DeterministicSingleAgentPlugin` | design_pattern       | `library-standard`          |
+| `DropLayer`                      | layer                | `library-standard`          |
 | `DropSummarizer`                 | summarizer           | `library-standard`          |
 | `EmbedStatesStep`                | step                 | `library-kg`                |
 | `EventsToOtelStep`               | step                 | `library-telemetry`         |
 | `ExportOtelStep`                 | step                 | `library-telemetry`         |
-| `FaultInjectMiddleware`          | infra_middleware     | `library-standard`          |
+| `FailLayer`                      | layer                | `library-standard`          |
+| `FaultInjectMiddleware`          | layer                | `library-standard`          |
 | `GitWorktreeRelatedState`        | related_state        | `library-standard`          |
-| `HttpLayer`                      | stack_layer          | `library-ioa`               |
+| `HttpLayer`                      | layer                | `library-ioa`               |
 | `HybridCheckpointStore`          | checkpoint_store     | `library-standard`          |
-| `InformUserTool`                 | system_tool          | `library-standard`          |
+| `InformUserPlugin`               | system_plugin        | `library-standard`          |
 | `InMemoryCheckpointStore`        | checkpoint_store     | `library-standard`          |
 | `IntrospectionPlugin`            | design_pattern       | `library-standard`          |
 | `JsonCheckpointStore`            | checkpoint_store     | `library-standard`          |
 | `LangChainSkillPlugin`           | skill_impl           | `library-skills`            |
 | `ListClickhouseSessionsStep`     | step                 | `library-telemetry`         |
-| `LlmCacheMiddleware`             | infra_middleware     | `library-standard`          |
-| `LlmSchedulerMiddleware`         | infra_middleware     | `library-standard`          |
+| `LlmCacheMiddleware`             | layer                | `library-standard`          |
+| `LlmSchedulerMiddleware`         | layer                | `library-standard`          |
 | `LlmSummarizer`                  | summarizer           | `library-standard`          |
 | `LocalAgentComm`                 | agent_comm           | `library-standard`          |
 | `LocalGroupAgentComm`            | agent_comm           | `library-standard`          |
@@ -339,36 +361,39 @@ practical examples.
 | `Neo4jPushStep`                  | step                 | `library-kg`                |
 | `NormalizeEventsStep`            | step                 | `library-kg`                |
 | `NormalizeOtelStep`              | step                 | `library-kg`                |
+| `NoUndeclaredPeerPlugin`         | governance           | `library-standard`          |
 | `NoUndeclaredToolPlugin`         | governance           | `library-standard`          |
 | `OpenAILLMProvider`              | llm_provider         | `library-standard`          |
 | `OtelObservabilityPlugin`        | observability        | `library-telemetry`         |
+| `PauseSessionPlugin`             | system_plugin        | `library-standard`          |
 | `PlanExecutePlugin`              | design_pattern       | `library-standard`          |
 | `PlotMultilevelTrajectoryKGStep` | step                 | `library-kg`                |
 | `ReactPlugin`                    | design_pattern       | `library-standard`          |
 | `RegistryHitlContract`           | hitl_contract        | `library-standard`          |
 | `RegistryUserIOContract`         | user_io_contract     | `library-standard`          |
 | `ReleasePolicy`                  | a2a_delivery_policy  | `library-enforcement-proxy` |
-| `RequestHumanInputTool`          | system_tool          | `library-standard`          |
+| `ReplayLayer`                    | layer                | `library-standard`          |
+| `RequestHumanInputPlugin`        | system_plugin        | `library-standard`          |
 | `RequestPolicy`                  | governance           | `library-enforcement-proxy` |
+| `RetryLayer`                     | layer                | `library-standard`          |
 | `RetryOnErrorPlugin`             | governance           | `library-standard`          |
 | `RunSkillScriptPlugin`           | skill_shell          | `library-skills`            |
+| `RunSkillScriptSystemPlugin`     | system_plugin        | `library-skills`            |
 | `SampleGovernancePlugin`         | governance           | `library-standard`          |
 | `SemanticMemoryPlugin`           | memory               | `library-standard`          |
+| `SendPlugin`                     | system_plugin        | `library-standard`          |
 | `SendTool`                       | engine_tool_provider | `library-standard`          |
-| `SendTool`                       | system_tool          | `library-standard`          |
 | `SinglePassPlugin`               | design_pattern       | `library-standard`          |
 | `SkillCatalogPlugin`             | skill_catalog        | `library-skills`            |
 | `SkillToolsPlugin`               | skill_tools          | `library-skills`            |
 | `SlidingWindowConversation`      | context_manager      | `library-standard`          |
-| `SlimAgentComm`                  | stack_layer          | `library-ioa`               |
-| `SpawnSubagentTool`              | system_tool          | `library-standard`          |
-| `SpawnSubagentTool`              | system_tool          | `library-standard`          |
+| `SlimAgentComm`                  | layer                | `library-ioa`               |
 | `StackAgentComm`                 | agent_comm           | `library-standard`          |
 | `StackConversation`              | context_manager      | `library-standard`          |
 | `StateMachinePlugin`             | design_pattern       | `library-standard`          |
 | `SubagentSpawner`                | engine_tool_provider | `library-standard`          |
+| `SubagentsPlugin`                | system_plugin        | `library-standard`          |
 | `SummarizingConversation`        | context_manager      | `library-standard`          |
-| `ThresholdCircuitBreaker`        | circuit_breaker      | `library-standard`          |
 | `ToyEchoMetric`                  | eval_metric          | `library-eval`              |
 | `TraceContextLayer`              | agent_comm           | `library-standard`          |
 | `TreeOfThoughtsPlugin`           | design_pattern       | `library-standard`          |

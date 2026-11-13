@@ -5,7 +5,7 @@
 # Runtime engine manifests (`kind: RuntimeEngine`)
 
 A **RuntimeEngine** manifest sets kernel and LLM engine tuning for a whole deployment.
-It covers queue depth, the dispatch step budget, streaming, parallel tool calls, and the built-in LLM response cache policy (read and write flags).
+It covers queue depth, the dispatch step budget, streaming, parallel tool calls, and the LLM response cache policy (read and write flags).
 Write one to change these settings for every agent, for example to cap a runaway dispatch loop in CI.
 
 A RuntimeEngine does not configure LLM endpoints.
@@ -42,18 +42,18 @@ For offline CI, replay responses recorded against a live provider with [llm_cach
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `engine.queue_depth` | `32` | Kernel engine queue depth (integer >= 1) |
+| `engine.queue_depth` | `32` | How many engine calls are staged before they run (integer >= 1). A larger batch runs in chunks of this size, in order |
 | `engine.max_auto_steps` | `null` (no cap) | Dispatch-loop step cap; stops a runaway loop |
 | `engine.timeout` | none | Accepted by the schema; the current kernel does not apply it |
-| `cache.enabled` | none | `false` turns built-in cache read and write off |
-| `cache.read` / `cache.write` | `true` / `true` | Built-in engine disk cache lookup / store |
+| `engine.tool_worker` | `thread` | Where sync plugin tools run when a batch overlaps: `thread` or `inline`. Placement only: same context, same results, same order. An async `on_execute_tool` / `execute` (or `on_aexecute_tool`) never uses it; it runs on the event loop. Each sync tool class is logged once (warning under `inline`) |
+| `engine.tool_concurrency` | none | How many sync plugin tools run at once. No cap other than the batch size |
+| `cache.enabled` | none | `false` turns cache read and write off, even when a flag asks for them |
+| `cache.read` / `cache.write` | `false` / `false` | Turn the `llm_cache` infra step on for this deployment |
 | `stream` | `false` | Stream LLM responses |
-| `parallel` | none | Overrides the design pattern's `parallel_tool_calls` for agents on this deployment |
+| `parallel` | none | Overrides the design pattern's `parallel_tool_calls` for agents on this deployment. `false` runs every call of a reply one at a time, in order, then asks the model once. |
 
-The built-in cache stores responses in `$XDG_CACHE_HOME/mas/llm_cache.json`.
-The default is `~/.cache/mas/llm_cache.json`; `cache_dir` in the user `config.yaml` moves it.
-The built-in cache is off for a session whose infra pipeline has any middleware step, such as `llm_cache` or `fault_inject`.
-The middleware then owns caching.
+These flags do not cache anything themselves. When `cache.read` or `cache.write` is on and the infra has no `llm_cache` step, `mas-ctl` inserts one. It stores responses in `$XDG_CACHE_HOME/mas/llm_cache.json` (default `~/.cache/mas/llm_cache.json`; `cache_dir` in the user `config.yaml` moves it).
+An `llm_cache` step already in the infra keeps its own `params`, except that `cache.enabled: false` turns its read and write off.
 See [LLM cache: Overview](llm-cache.md#overview).
 
 ## How refs are resolved
@@ -92,7 +92,7 @@ List it in `runtime_refs` or pass it with `--runtime-ref`.
 The loader builds `KernelConfig` (the kernel's resolved settings) and the LLM cache and stream behaviour in layers.
 Later layers win:
 
-1. Package defaults: `DEFAULT_ENGINE_QUEUE_DEPTH = 32`, no step cap, cache read and write on, streaming off.
+1. Package defaults: `DEFAULT_ENGINE_QUEUE_DEPTH = 32`, no step cap, cache read and write off, streaming off.
 2. Env vars `MAS_LLM_CACHE_READ`, `MAS_LLM_CACHE_WRITE`, `MAS_LLM_STREAM`. They apply only to keys that no RuntimeEngine manifest sets.
 3. Merged `RuntimeEngine` manifests from the resolution table above.
 4. CLI flags on `mas-ctl chat`: `--cache-read/--no-cache-read`, `--cache-write/--no-cache-write`, `--stream/--no-stream`.
@@ -103,4 +103,4 @@ Later layers win:
 - [user-config.md](../user-config.md): workspace and XDG layout
 - [LLM cache](llm-cache.md): cache middleware versus cache policy
 - [Execution tuning](execution.md): fields removed from Agent manifests
-- [LLM cache reference: Two cache mechanisms](../references/llm-cache.md#two-cache-mechanisms)
+- [LLM cache reference: One cache](../references/llm-cache.md#one-cache)

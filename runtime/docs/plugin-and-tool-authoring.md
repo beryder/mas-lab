@@ -122,6 +122,23 @@ ToolContract.call_tool(name, arguments)   -> validates arguments, then
     ToolContract.execute(**arguments)     -> dict result
 ```
 
+#### Sync tools and async tools
+
+Write **one** method, and write it async: `async def on_execute_tool` (or `async def execute` on `ToolContract`). That is the way to write a new tool. You do not need `on_aexecute_tool`. The async path awaits it on the event loop; there is no worker thread. The sync path (`call_tool`) runs it to completion on one shared helper loop (a daemon thread started on first use, so a loop-bound client kept between calls stays valid). Call `acall_tool` from async code. A sync `on_execute_tool` / `execute` still works for existing plugins: the engine may run that call in a worker thread (`engine.tool_worker`). `on_aexecute_tool` still wins when present.
+
+A tool is **async** when that one method is a coroutine, or when it still implements `on_aexecute_tool` / provider `acall_tool`. It is **sync** when it only has a blocking `execute` / `on_execute_tool`.
+
+| Kind | Where it runs | What a slow call does |
+| --- | --- | --- |
+| Async | Awaited on the event loop, no thread | Nothing. Other calls, tools and sessions keep running while it waits on I/O |
+| Sync, `engine.tool_worker: thread` (default) | One worker thread per call | The loop stays free; the thread is held for the call |
+| Sync, `engine.tool_worker: inline` | On the event loop | Blocks everything on that loop until it returns, including the other tools of the batch |
+| `kernel_state = True` | Inline in the kernel, always | Blocks, by design. Reserved for tools that read or change session state (skills) |
+
+A blocking call (HTTP, MCP, a subprocess, a file read) is only a problem in a sync tool. Written as an async tool it overlaps with no thread, so `inline` costs nothing. Moving sync tools to async is the planned way to make `inline` the default. The runtime flags each sync tool class once in the log: a warning under `inline`, a note under `thread`.
+
+Every tool gets the same frozen `ToolCallContext`, never the kernel ctx, so placement cannot change its result. `engine.tool_concurrency` bounds how many sync tools run at once. Delegation and other engine-tool contracts already expose `acall`.
+
 A tool that serves several call names overrides `list_tools()` and `call_tool()`. Optional hints (`is_idempotent()`, `is_read_only()`, `is_destructive()`, `get_timeout_seconds()`, ...) are advertised with the schema. See [dev/schemas/tool-definition.md](dev/schemas/tool-definition.md).
 
 
@@ -129,7 +146,20 @@ A tool that serves several call names overrides `list_tools()` and `call_tool()`
 
 `mas-runtime` ships no built-in tools. Tutorial and benchmark tools live in `library-samples/tools/` as `kind: Tool` manifests (`*.tool.yaml`) next to their Python classes. Examples: `calc`, `web-search`, `memory-search`, and the trip-planner tools (`get_fares`, `get_attractions`, `lookup_schedule`, `query_graph_database`). Agents reference them through `spec.tools[].ref` (for example `samples:tools/memory-search.tool.yaml`).
 
-`library-standard` provides the system tools (human input, user notification, subagent spawning) and the in-process tool provider; see its `library.yaml`.
+`library-standard` provides the system plugins (human input, user notification, subagent spawning) and the in-process tool provider; see its `library.yaml`.
+
+### System plugins
+
+A system plugin is a syscall the model may call. Register it as type `system_plugin`
+and derive from `mas.runtime.system_plugins.SystemPluginBase`. Implement `tools`
+(what it adds to the model's tool list), `bind` (the state, once per session) and
+`call`; `close`, `snapshot`, `restore`, `claims` and `should_load` have defaults.
+`InstanceSystemPlugin` covers the common case of one tool object with
+`on_collect_tools` / `on_execute_tool`: implement `make_instance`. Whether a plugin
+loads unnamed is the `default_enabled` attribute of its library row, or its
+`should_load` rule over the agent spec. Import `runtime/tests/system_plugins/conformance.py`
+in the plugin's tests. Agents grant the plugin in `spec.system_plugins`. See
+[system-plugins.md](../../docs/manifests/system-plugins.md).
 
 
 ## 5. Contract taxonomy

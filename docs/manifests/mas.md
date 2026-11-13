@@ -218,7 +218,7 @@ patch:
 
 _Used by:_ `spec.workflow`
 
-Declares the entry point and the delegation graph. The embedded `MAS.spec.workflow` has `entry` and `nodes`. It has no `type` or `edges` field. The entry agent's `design_pattern` controls its reasoning and delegation.
+Declares the entry point and the delegation graph. The embedded `MAS.spec.workflow` has `entry` and `nodes`. It has no `type` or `edges` field. `entry` is the agent that receives the user query. It does not change which leftover tools that agent offers. Each agent's leftover `delegate_to_<id>` tools come from its own `delegates_to` (deprecated, still implied). Set `behavior.delegation_style: none` on an agent to keep the topology and the send path without offering the model those tools. A linear, parallel, or single design pattern on an agent uses that agent's list as its next hop. An empty `delegates_to` means the model sees none of those tools. Hiding the tools is not a lock: a model call to a hidden `delegate_to_<id>` name for a declared peer still runs unless `gov_no_undeclared_tool` blocks it (it is in `with-hardened`).
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -246,7 +246,7 @@ _Used by:_ `spec.workflow.nodes[]`
 | Field | Type | Required | Default | Description |
 | ------- | ------ | ---------- | --------- | ------------- |
 | `id` | `string` | **yes** | — | Node identifier. Must match an `agency.agents[].id`. |
-| `delegates_to` | `string[]` | no | `[]` | IDs of agents this node may delegate to. Sets the `delegate_to_<id>` tools that the entry agent's LLM sees. Deprecated, still supported, no removal date. An empty list does not warn. |
+| `delegates_to` | `string[]` | no | `[]` | IDs of leftover `delegate_to_<id>` tools offered to the model. A pattern that sends itself uses this list as the next hop. An empty list means none of those tools. Deprecated, still supported, no removal date. An empty list does not warn. |
 | `role` | `string` | no | — | Role label, informational. |
 | `agent` | `string` | no | — | Agent id override, for when the node id differs from the agent id. |
 | `dispatch` | `string` | no | — | Deprecated, still accepted, ignored. Validation warns once and lists the nodes that set it. A node does not fan out to its peers; the model chooses parallel tool calls. |
@@ -382,9 +382,18 @@ spec:
 ### Concurrency model
 
 The runtime is synchronous by default. Single-agent CLI chat, unit tests, and the benchmark harness call `invoke`, `feed`, and `run_turn`.
-Concurrent fan-out uses async twins of those calls (`ainvoke`, `afeed`, `arun_turn`, `adelegate`, `aspawn`) on one cooperative event loop. Fan-out means parallel tool calls and concurrent `spawn_subagent`.
 
-LLM providers must implement `achat_completion` as the async twin of `chat_completion`. A missing implementation fails at plugin load. The runtime does not run it on a worker thread, because OS-thread parallelism would break the lock-free run state (`SpawnLedger`, `InProcessCommBus`, `WorkingMemoryRegistry`).
+**Many sessions in one process.** Each conversation is its own session object, with its own kernel and chat buffer. A service can run those sessions on separate threads, on one event loop (`arun_turn`), or on one loop per thread. A test runs eight sessions each way.
+
+A2A `message/send` uses `contextId` as that session id. Pass it to continue a conversation. Omit it and a new conversation starts. A second message on the same `contextId` waits in a queue until the current turn finishes. Every `contextId` gets its own runtime, built again from the agent's manifest: its own kernel, context and engine. Conversations therefore run in parallel and share nothing, and each remembers its earlier messages. For a `run-mas` agent a conversation is a new copy of the whole MAS, wired like the run. A listener keeps at most 1024 conversations open and refuses a further new `contextId`. An agent started with an injected engine cannot be rebuilt, so it serves one conversation.
+
+The LLM cache file, when you turn the cache on, is shared on purpose: the same prompt replays the same answer, so runs compare. Do not put the session id in the cache key. Pass your own `contextId` when you need a stable conversation id. The `llm_scheduler` limiter is also shared, so one process can keep a rate limit.
+
+**Inside one session.** Concurrent fan-out uses the async twins (`ainvoke`, `afeed`, `arun_turn`, `adelegate`, `aspawn`) on one cooperative event loop. Fan-out means parallel tool calls and concurrent `spawn_subagent`. CLI chat waits for one turn to finish before the next line. A2A send queues. `run_turn` is the inner exclusive runner used by CLI and tests.
+
+LLM providers must implement `achat_completion` as the async twin of `chat_completion`. A missing implementation fails at plugin load. The runtime does not run it on a worker thread: one session's fan-out stays on one event loop (`SpawnLedger`, `InProcessCommBus`).
+
+A plugin tool sees the same thing wherever it runs: a frozen `ToolCallContext` (session, agent, user, turn, a copy of the spec). It cannot reach or change run state, so running it inline, in a thread or elsewhere gives the same result in the same order; only timing differs. Write a new tool as `async def on_execute_tool` (or `async def execute`). That one method is enough. A `def on_execute_tool` still works for existing plugins: the engine may run it in a worker thread by default. `on_aexecute_tool` still wins when present. That placement is set in the RuntimeEngine manifest, not on the tool: `engine.tool_worker` (`thread`, the default, or `inline`) and `engine.tool_concurrency` (default none: only the size of the batch limits it). A tool that must read or change session state (the skill tools) declares `kernel_state = True`; it gets the live ctx and always runs inline in the kernel.
 
 OSS has no `WorkflowContract.register_impl()`. Topology and workflow are declarative YAML. ctl composes and runs them.
 

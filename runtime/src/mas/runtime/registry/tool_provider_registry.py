@@ -17,9 +17,11 @@ claim; local YAML is still listed to confirm those names exist.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Dict, List
 
+from mas.runtime.boundary.connection import PreparedOperation
 from mas.runtime.contracts.tool_contract import invoke_call_tool
 from mas.runtime.engine.tool_routing import (
     ExplicitToolUnavailableError,
@@ -146,6 +148,9 @@ class ToolProviderRegistry:
 
     def unregister_provider(self, provider: ToolProvider) -> None:
         if provider in self._providers:
+            retire = getattr(provider, "retire_bindings", None)
+            if callable(retire):
+                retire()
             self._providers.remove(provider)
             self._routes = None
             logger.debug("Unregistered tool provider: %s", provider_name(provider))
@@ -160,6 +165,16 @@ class ToolProviderRegistry:
 
     def providers(self) -> List[ToolProvider]:
         return list(self._providers)
+
+    def advertised_names_by_provider(self) -> dict[str, tuple[str, ...]]:
+        """Tool names each provider currently routes, grouped by provider name."""
+        buckets: dict[str, list[str]] = {}
+        for name, route in (self._routes or {}).items():
+            sid = str(route.provider_name or "")
+            token = str(name or "").strip()
+            if sid and token:
+                buckets.setdefault(sid, []).append(token)
+        return {sid: tuple(names) for sid, names in buckets.items()}
 
     def local_provider(self) -> Any | None:
         for provider in self._providers:
@@ -243,8 +258,10 @@ class ToolProviderRegistry:
                 advertised = tuple(n for n in local_names if n and n not in externally_claimed)
                 claim = advertised
             else:
-                advertised = tuple(n for n in local_names if n) if is_star_claim(claim) else tuple(
-                    str(n) for n in (claim if not isinstance(claim, str) else (claim,)) if n and n != "*"
+                advertised = (
+                    tuple(n for n in local_names if n)
+                    if is_star_claim(claim)
+                    else tuple(str(n) for n in (claim if not isinstance(claim, str) else (claim,)) if n and n != "*")
                 )
                 if not is_star_claim(getattr(provider, "tools_claim", "*")):
                     self._verify_explicit(provider, name, advertised, ctx=ctx)
@@ -307,6 +324,22 @@ class ToolProviderRegistry:
                 seen.add(name)
         return out
 
+    def assert_call_allowed(self, tool_name: str, *, ctx: Any = None) -> None:
+        self.initialize(ctx=ctx)
+        route = (self._routes or {}).get(tool_name)
+        if route is None or route.handler is None:
+            raise UnclaimedToolError(f"Tool {tool_name!r} is not registered with any provider")
+
+    def prepare_call(self, tool_name: str, arguments: dict[str, Any], *, ctx: Any = None) -> PreparedOperation:
+        from mas.runtime.boundary.connection import BindingUnavailable
+
+        self.assert_call_allowed(tool_name, ctx=ctx)
+        handler = self._routes[tool_name].handler
+        prepare = getattr(handler, "prepare_call", None)
+        if not callable(prepare):
+            raise BindingUnavailable("The selected tool provider does not expose a resolved connection")
+        return prepare(tool_name, arguments, ctx=ctx)
+
     def call_tool(
         self,
         tool_name: str,
@@ -326,10 +359,50 @@ class ToolProviderRegistry:
                     "Claim it on a provider plugin, or reintroduce in-process with a kind: local overlay."
                 )
             raise UnclaimedToolError(f"Tool {tool_name!r} is not registered with any provider")
+        from mas.runtime.engine.tool_workers import provider_ctx
+
         return invoke_call_tool(
             route.handler.call_tool,
             tool_name,
             arguments,
+            ctx=provider_ctx(route.handler, ctx),
+            user=user,
+            **kwargs,
+        )
+
+    async def acall_tool(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        *,
+        ctx: Any = None,
+        user: str = "",
+        **kwargs: Any,
+    ) -> Any:
+        """Async twin of :meth:`call_tool`. Prefers ``acall_tool`` on the owner."""
+        self.initialize(ctx=ctx)
+        route = (self._routes or {}).get(tool_name)
+        if route is None or route.handler is None:
+            if self.has_external_providers():
+                raise UnclaimedToolError(
+                    f"using tools not claimed by any provider: {tool_name!r}. "
+                    "Claim it on a provider plugin, or reintroduce in-process with a kind: local overlay."
+                )
+            raise UnclaimedToolError(f"Tool {tool_name!r} is not registered with any provider")
+        from mas.runtime.engine.tool_workers import arun_sync_tool, provider_ctx
+
+        acall = getattr(route.handler, "acall_tool", None)
+        if callable(acall):
+            result = acall(tool_name, arguments, ctx=provider_ctx(route.handler, ctx), user=user, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        return await arun_sync_tool(
+            invoke_call_tool,
+            route.handler.call_tool,
+            tool_name,
+            arguments,
+            owner=route.handler,
             ctx=ctx,
             user=user,
             **kwargs,
@@ -433,9 +506,7 @@ def providers_from_manifest(
         if protocol and protocol not in kinds:
             ident = str(server.get("id") or server.get("name") or "").strip()
             where = f"tool server {ident!r}" if ident else "tool server"
-            raise ValueError(
-                f"{where} protocol {protocol!r} has no registered provider"
-            )
+            raise ValueError(f"{where} protocol {protocol!r} has no registered provider")
     external = [item for item in collected if str(getattr(item, "kind", "") or "") != "local"]
     local_ones = [item for item in collected if str(getattr(item, "kind", "") or "") == "local"]
     if external:

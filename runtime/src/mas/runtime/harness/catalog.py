@@ -48,7 +48,7 @@ BOUNDARY_SLOTS = frozenset(
         "tool_provider",
         "llm_provider",
         "agent_comm",
-        "system_tool",
+        "system_plugin",
         "hitl_contract",
         "user_io_contract",
         "engine_tool_provider",
@@ -71,6 +71,8 @@ LIBRARY_TYPES = frozenset(
         "execute_sandbox",
         "circuit_breaker",
         "retry",
+        "layer",
+        "stack_layer",
         "infra_middleware",
         "hitl_responder",
         "control_protocol",
@@ -95,7 +97,7 @@ SPEC_IDENTITY_TYPES = frozenset(
         "user_io_contract",
         "governance",
         "observability",
-        "system_tool",
+        "system_plugin",
     }
 )
 

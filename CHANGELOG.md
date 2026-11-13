@@ -10,13 +10,35 @@ reconciling the release notes with the code and docs currently on that branch.
 
 ## Unreleased
 
+### Added
+
+- `mas-lab init` writes `api_base: env:OPENAI_BASE_URL|<url>` so the file names the env var. `standard:openai` and the sample workspace do the same. A custom URL at init uses `<infra-name>_API_BASE` so a leftover `OPENAI_BASE_URL` does not steal the call.
+- Write a new tool as `async def on_execute_tool` (or `async def execute`). That one method is enough; the engine awaits it. A `def on_execute_tool` still works: the engine may run it in a worker thread. `on_aexecute_tool` still wins when present. The sync path finishes an async tool instead of returning a coroutine. Calling `call_tool` from a running loop raises; use `acall_tool`.
+- `gov_no_undeclared_peer` BLOCKs leftover `delegate_to_*` to a dest not in this agent's `delegates_to`. A user tool named `send` or a declared `delegate_to_<x>` tool is left alone. `with-hardened` names it. Send itself does not refuse.
+
+### Changed
+
+- `--cache-read` / `--cache-write` help now says the cache is off until those flags insert the `llm_cache` step. The default pipeline is retry only.
+- The cache docs describe one LLM cache, the `llm_cache` step. The "built-in engine cache" sections are gone; `MAS_LLM_CACHE_READ` / `_WRITE` and `RuntimeEngine` `cache.read` / `write` insert that step.
+- `behavior.delegation_style: none` hides the leftover `delegate_to_*` tools from the LLM. The peers and the send path stay, so a linear, parallel, or single pattern can still send to the next agent.
+- Leftover `delegate_to_*` tools shown to the LLM are this agent's `delegates_to`. An empty list means none of those tools. An agent not listed in the workflow shows none. `workflow.entry` only names who receives the user message.
+
 ### Breaking
 
+- A pattern's next hop is this agent's `delegates_to`. The old fallbacks (`workflow.participants`, every other node, the agency list) are gone, and an agent with no `delegates_to` has no next hop (the pattern logs a warning and ends the turn). `behavior.delegation_style` does not affect a pattern's next hop.
+- `send` no longer refuses a target outside `delegates_to`; the model can only call peers that are offered, and `gov_no_undeclared_peer` (in `with-hardened`) blocks the rest. It does nothing when the kernel has no agent id.
+- `standard:openai` now reads `OPENAI_BASE_URL` when that env var is set (`api_base: env:OPENAI_BASE_URL|https://api.openai.com/v1`). A hardcoded URL in that file used to ignore the env var. `openai.example.yaml` and the sample workspace use the same form; they used to read `OPENAI_API_BASE`. `OPENAI_API_BASE` is still used only when `api_base` is left empty.
+- LLM answers are stored only by the `llm_cache` infra step. `--cache-read` /
+  `--cache-write` / `--cache-read-only` turn that step on or change its flags.
+  The old provider wrap on the chat path is gone. A cache file written by that
+  wrap may not hit. Default read and write stay off until you turn them on.
+- `default_pipeline` in the user config attaches middleware when the workspace
+  lists none, the same way `default_infra` attaches an LLM endpoint.
 - `with-hardened` is one Control, written once for every agent you deploy: pass it with
   `--control pkg://mas.library.standard/controls/with-hardened.yaml` (or attach it from a Flavour with `agents: $all`).
   The `with-hardened` overlay is gone. It had set `design_pattern.params.max_steps: 512` (set it in the agent or a
-  RuntimeEngine manifest), and agent `spec.control` retry and circuit breaker (retry already defaults to 4 LLM and
-  2 tool attempts; the breaker returns, switched on for every agent, when the infra pipeline takes it).
+  RuntimeEngine manifest). Retry defaults to 4 LLM and 2 tool attempts as documented pipeline steps.
+  The circuit breaker is `standard:llm-proxy-hardened` (and `standard:tool-server-hardened`), not this Control.
   `-o openclaw` no longer attaches governance: its governance is the Control of the same name.
   `observability-native.yaml` moved from the overlays directory to `controls/` and is passed with `--control`.
 - Control `spec.observability` and `spec.governance` are sets of plugins. Matching
@@ -38,9 +60,9 @@ reconciling the release notes with the code and docs currently on that branch.
 - A Control lists `observability` and `governance` plugins only. Every item in a Control list is looked up by
   its name among the plugin types that list takes, and is refused when it is unknown, ambiguous within those types,
   or of another type. Delay, drop, fail, corrupt and replay are not Control plugins: they belong on the infra
-  pipelines with retry and the circuit breaker, and land there in a later release. `spec.impair`, `spec.plugins`,
-  and `spec.control` on a Control are leftover and refused. Retry and the circuit breaker keep their agent
-  `spec.control` settings (deprecated, still applied) until the infra pipeline takes them in the next release.
+  pipelines with retry and the circuit breaker. `spec.impair`, `spec.plugins`,
+  and `spec.control` on a Control are leftover and refused. Agent `spec.control.retry` and
+  `.circuit_breaker` still apply (deprecated, one warning) and become pipeline steps.
 - A Flavour `spec.control` row takes `settings`, merged over the named plugins of the Control it attaches, so one
   Control file gives different settings to different agents. The same file on the same agents with the same settings
   is one attachment.
@@ -106,6 +128,62 @@ reconciling the release notes with the code and docs currently on that branch.
 
 ### Fixed
 
+- `mas-lab init` never writes `OPENAI_API_BASE` for a custom URL (an infra called `openai` used to) and never a name that starts with a digit.
+- The adversarial and trip-planner LLM judges follow `OPENAI_BASE_URL`, then `OPENAI_API_BASE`, like the engine.
+- A tool whose `on_execute_tool` returns a coroutine through a `functools.wraps` decorator is awaited on the loop instead of raising under `engine.tool_worker: inline`.
+- The sync tool path (`call_tool`) finishes an async tool on one shared helper loop, so a client kept between calls stays valid. It used a new loop per call.
+- A `None` answer from `on_aexecute_tool` / an async `on_execute_tool` falls back to the legacy `execute` like the sync path does.
+- `mas-lab init` gives a second infra name with the same slug its own variable (`MY_PROVIDER_API_BASE_2`).
+- A LLM address taken from the shell (`OPENAI_BASE_URL`, `*_API_BASE`) logs one warning with its host: the API key is sent there.
+- The v0.2 blog post links to `aaif.io`.
+- An explicit pipeline retry keeps the params it named.
+- Session close stops the llm and tool call layers.
+- A withheld delegated turn includes the governance or boundary reason in the
+  `[send]` failure text.
+- An MCP client reuses one session for list and call after `connect`. The sync
+  wrapper keeps that session on one event loop so initialize is not repeated,
+  starts it once when parallel tool calls arrive together, reconnects after the
+  server connection closes, and ends a stdio server at `close()` or process exit.
+- Sessions on separate threads no longer disturb each other. Working memory is
+  stored per session, so one session walking its entries cannot meet another
+  session adding or dropping its own. The plugin registry and the shared LLM
+  cache are created under a lock. Tests run eight sessions on threads, on one
+  event loop, and on one loop per thread.
+- A2A `message/send` gives each `contextId` its own runtime: kernel, context and
+  engine, built again from the agent's manifest (`RuntimeInstance.conversation_factory`).
+  Omit `contextId` and a new conversation starts. Conversations run in parallel
+  and share nothing, and each one remembers its earlier messages: the turn is
+  committed to its context, which the listener used to skip. A second message on
+  the same id waits in a queue. At most 1024 conversations stay open; a further
+  new `contextId` is refused with `TooManyConversations`. An agent that cannot be
+  rebuilt (an injected engine) serves one conversation. A `run-mas` agent opens
+  each conversation as a new copy of the whole MAS, wired like the run.
+- `contract_call_*` has its own `call_id`. The inner `llm_call_*` / `tool_call_*`
+  keeps its `call_id` and parent. A span store keyed only by `call_id` no longer
+  overwrites the model tokens with the wrapper.
+- When no LLMProxy `api_base` is set, `OPENAI_BASE_URL` (or `OPENAI_API_BASE`) is
+  used. The missing-address error names the infra manifest and that env var. The address reaches the LLM
+  provider too, not only the engine's own label.
+- A denied tool is that call's result. The next model call is a later step, not
+  started from inside the denial. In a parallel batch the allowed siblings still
+  run, and the model sees every denial.
+- A batch with more calls than `engine.queue_depth` runs in chunks of that size, in
+  order. It no longer fails with "engine outbound queue full".
+- Plugin tools on the async path overlap in a parallel batch. `on_aexecute_tool`
+  or provider `acall_tool` runs on the event loop. A sync tool runs in a thread by
+  default; `engine.tool_worker` (`thread` or `inline`) and `engine.tool_concurrency`
+  in the RuntimeEngine manifest set where and how many. A plugin tool gets the same
+  frozen `ToolCallContext` wherever it runs, so placement changes timing only. A tool
+  that must change session state (skills) declares `kernel_state` and runs inline.
+  Each sync tool class is logged once (a warning under `inline`, which blocks the
+  event loop); the authoring guide explains how to write the async version.
+- A parallel batch commits as a unit. Every call is decided first; a HITL pause,
+  TERMINATE or plugin error stops the batch with no call left waiting and no
+  envelope left open. Checked over every combination of decisions for 2 and 3 calls.
+- With `parallel: false` every call of a reply runs, one at a time in order, and
+  the model is asked once after the last result. Before, only the first ran and
+  the model had to ask again for the rest. A denial is that call's result; a HITL
+  pause keeps the rest queued.
 - A governance plugin name that is not registered as a governance plugin is now an error. It was a logged warning
   and the plugin was skipped, so a typo in a Control disabled it silently. The runtime names no fallback plugin.
 - The Agent deprecation warning printed a literal `{whom}`.
@@ -138,7 +216,7 @@ reconciling the release notes with the code and docs currently on that branch.
   two models on one connection get separate pacing buckets.
 - A middleware step with no `for` wraps llm calls only, same as before
   this branch. An empty `for` list is llm, not every kind.
-- `mas-ctl infra show` prints `api_base` / tool `url` without userinfo or
+- `mas-ctl infra resolved` prints `api_base` / tool `url` without userinfo or
   query.
 - Destination tool steps wrap the server that claims the tool name,
   with the same explicit-over-star rules as tool routing. A star
@@ -152,6 +230,38 @@ reconciling the release notes with the code and docs currently on that branch.
 
 ### Added
 
+- Move retry, the circuit breaker, cache, scheduler, fault inject, delay,
+  drop, fail, corrupt, and replay off separate plugin types and onto
+  steps around llm, tool, and send calls.
+  `standard:llm-proxy-hardened` and `standard:tool-server-hardened`
+  list retry outside the breaker (`failure_threshold` 5, `reset_timeout_s` 30,
+  `on: [unavailable]`). `standard:retry-llm`, `standard:retry-tool`, and
+  `standard:circuit-breaker` are the same steps as standalone refs. The breaker
+  keeps its state in the running spec (`spec.layer_state`); after
+  `reset_timeout_s` exactly one call is let through as the probe. A tool that
+  declares a `probe` leaves the running spec when its circuit opens and
+  returns when that probe succeeds.
+- Stop retrying inside the engine; when a run omits retry, insert one
+  (LLM 4 times, tool twice when the tool says it is safe to retry),
+  marked `(default)`. `mas-ctl infra list`, `show`, and `resolved` print
+  those steps and mark the default.
+- `with-hardened` was an overlay that patched the agent spec; it is now a
+  Control for call ceilings and error policy. The circuit breaker moves
+  to `standard:llm-proxy-hardened` and `standard:tool-server-hardened`.
+- Give each of those steps a name (`retry-llm`, `breaker-llm`, ...) and an
+  off switch. A name the runtime does not know is an error at start.
+- Agent `spec.system_plugins` grants runtime syscalls (`inform_user`,
+  `request_human_input`, `send`, `pause_session`, `subagents`, `activate_skill`,
+  `run_skill_script`). A plugin owns session state and may expose several tools.
+  `subagents` advertises `create_subagent`, owns the spawn ledger and runs the call (the
+  session executor binds the spawner that builds the child; sync and async); a session
+  checkpoint or in-memory snapshot restores system plugin state, and a restore keeps the
+  ceilings the spec sets and the spend the snapshot saved. `send` is the engine's delegation
+  and claims only the `delegate_to_<id>` names the model was offered. An empty list loads none, except
+  skill plugins implied by `spec.skills`. Unknown names, `enabled: false` of an
+  unknown name, and two plugins exposing one tool name in one agent are load
+  errors. Overlay `$op.add` / `$op.remove` patches `system_plugins` by plugin id
+  and `mas-ctl validate` errors on an unknown name there too.
 - Flavour `spec.control` attaches `kind: Control` documents (observability and
   governance sets) to agents by `$all`, `$entry`, `$not-entry`, `$delegates`, one
   id, a list of ids, or the same agent path as `--override` (`.mas.agent[id]` /
@@ -174,7 +284,7 @@ reconciling the release notes with the code and docs currently on that branch.
   Control are refused. A relative path in a plugin setting must be listed in
   `path_params` (a file next to the Control) or `run_path_params` (a path the run
   writes); an unlisted one is refused.
-- `--control REF[@SELECTOR]` (`chat`, `tui`, `serve`, `run-mas`, `compile`, `infra show`, `mas-lab benchmark`) attaches a
+- `--control REF[@SELECTOR]` (`chat`, `tui`, `serve`, `run-mas`, `compile`, `infra resolved`, `mas-lab benchmark`) attaches a
   Control to the session's Flavour from the command line; the run hash includes it. `--events-sink ROW` adds a row to `bind.events`.
   `serve` takes `--no-events` and `--events-format` the way `chat` does.
   A scenario's `overlays.control` attaches Control files the same way. The flags are another way to write
@@ -218,10 +328,20 @@ reconciling the release notes with the code and docs currently on that branch.
 - `design_pattern: moderated_rounds`: a preset of `state_machine` for a group
   that must agree on one plan. Fixed-order rounds, a decider's JSON action
   after each, and a confirmation round per proposed plan.
-- `mas-ctl infra show` prints each LLM and tool chain (`for` / `per` on
-  every step) and each agent's comm stack. `--json` is a stable document.
-  `--infra-ref`, `--runtime-ref`, `--override`, and `--middleware` match
-  chat and run-mas.
+- `mas-ctl infra list` prints installed refs (`--type` filters kind).
+  `mas-ctl infra show REF` prints that catalog entry (connection and pipeline,
+  with params). A middleware ref prints its listed steps. A RuntimeEngine ref
+  prints the kernel fields it applies (`queue_depth`, `stream`), not a call
+  pipeline.
+  Destinations that are not on the ref or the merged run are omitted.
+  `mas-ctl infra resolved` prints the steps a session actually runs around
+  llm and tool calls (same as chat and run-mas). Each LLM and tool chain
+  (`for` / `per` / `max_attempts` on every step) and each agent's comm stack.
+  A default retry is listed and marked `(default)` when the run does not
+  list one.
+  `--connections` / `--pipeline` print one view.
+  `--json` is a stable document. `--infra-ref`, `--runtime-ref`, `--override`,
+  and `--middleware` on `resolved` match chat and run-mas.
 - Several `LLMProxy` refs stay separate leaves. The model name (and
   `models.mappings` aliases) selects which leaf provides the call —
   same shape as tool-name routing. Eval uses `experiment.models.judge`.
@@ -353,6 +473,12 @@ reconciling the release notes with the code and docs currently on that branch.
 
 ### Changed
 
+- Stop retrying inside the engine. Retry is a step around the call. When a
+  run omits one, insert it (LLM 4 times, tool twice when the tool says it
+  is safe to retry; `retry_on: [transient, unavailable]`).
+- Syscalls are granted in `spec.system_plugins`, not `spec.tools`. A plugin loads
+  when named, when its library row is `default_enabled`, or when its own rule over
+  the spec grants it; `enabled: false` turns off all three.
 - `--events*` is a shortcut on the run. `--no-events` and
   `--events-format` `native` / `otel` / `both` replace the plugin set.
   `--events` only forces recording; `--events-file` and `--events-stdout`
@@ -374,7 +500,7 @@ reconciling the release notes with the code and docs currently on that branch.
 - A SLIM link reconnects after five read failures.
 - A local-group send waits at most `reply_timeout_s`.
 - A2A REST uses `application/a2a+json`; an unsupported type is 400.
-- `mas-ctl infra show` prints each agent's comm column from its Flavour
+- `mas-ctl infra resolved` prints each agent's comm column from its Flavour
   chain, the `protocol` of the row that reaches it, or the library default
   `agent_comm` plugin.
 - Application rows: the schema requires `protocol` but no longer `url`,
@@ -433,6 +559,24 @@ reconciling the release notes with the code and docs currently on that branch.
 
 ### Deprecated
 
+- `mas-ctl infra show` as a merged run: use `infra resolved`. `infra show REF` is
+  the catalog entry. The old invocation still works and warns.
+- Deprecate agent `spec.control.retry` and `.circuit_breaker`: they still
+  apply, warn once, and become steps around the call. Prefer a `retry` /
+  `circuit_breaker` step.
+- Deprecate plugin types `infra_middleware`, `stack_layer`, and
+  `circuit_breaker`, and the pipeline key `middleware:`: each still loads,
+  warns once, and names `layer`.
+- `{kind: system, name, params}` in `spec.tools`: list the plugin in `spec.system_plugins`.
+  It grants the same plugin (`params` become its settings, `enabled: false` turns it off) and
+  warns once; `mas-ctl validate` warns per entry. When both name one plugin, `spec.system_plugins`
+  wins. The Agent schema marks the entry deprecated.
+- The `spawn_subagent` plugin name (use `subagents`; its tool is `create_subagent`), the
+  `system_tools=` argument of the host tool-provider loaders (use `system_plugins=`), and the
+  `system_tool` plugin type (use `system_plugin`). Each still loads and warns once.
+  Overlay `$op.remove` of `spawn_subagent` removes `subagents`. `mas-ctl validate` on an Overlay
+  errors on an unknown plugin name in `$op.add` / `$op.remove`. A leftover `system_tool` row
+  still receives its named settings and still wraps `hitl` / `user_io`.
 - Passing a Control with `-o`, and listing Controls under an Overlay's `spec.control`, still work and warn
   once per run: attach Controls with `--control` or a Flavour. A scenario's `overlays.control` attaches
   Control files the same way `--control` does.
@@ -478,6 +622,12 @@ reconciling the release notes with the code and docs currently on that branch.
 
 ### Removed
 
+- Drop LLMProxy `spec.proxy.retry`. Retry is a step around the call. The
+  schema accepted the field; the resolver never applied it.
+- Drop `request_with_retries` and `arequest_with_retries` in
+  `mas.library.standard.plugins.llm.http`, and the `plugins.reliability`
+  package with `ThresholdCircuitBreaker`. A provider calls `request_once`;
+  retry and the breaker are steps around the call.
 - `node_dispatch` and `uses_parallel_dispatch` in
   `mas.runtime.boundary.delegation.policy`, and ctl's
   `fanout_workflow_delegates`: they read `workflow.nodes[].dispatch` and

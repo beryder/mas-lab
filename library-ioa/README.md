@@ -8,7 +8,7 @@ Agents keep the same tool names and arguments. MCP endpoints come from infra `To
 
 - `src/library_ioa/plugins/mcp/spec.py` — infra server entry → client config
 - `src/library_ioa/plugins/mcp/contract.py` — MCP Tool/CallToolResult ↔ MAS list_tools/call_tool
-- `src/library_ioa/plugins/mcp/client` — SDK-backed client (one session per list/call)
+- `src/library_ioa/plugins/mcp/client` — SDK-backed client (one session after `connect`; the sync wrapper keeps that session for list and call)
 - `src/library_ioa/plugins/mcp/provider.py` — `kind: mcp` tool-provider plugin
 - `src/library_ioa/plugins/mcp/server` — wrap a MAS tool manifest as an MCP server (`mas-mcp`)
 - `src/library_ioa/utils` — result/error helpers
@@ -106,3 +106,9 @@ See the A2A feature page at [docs/a2a/protocol-compliance.md](docs/a2a/protocol-
 An A2A Application endpoint can set `a2a.webserver` to a registered webserver binding, for example `webserver: {type: uvicorn}`. Omitting it retains the Uvicorn default. A directly supplied webserver instance takes precedence.
 
 Webserver plugins may implement `TransportValidatingWebServer.validate_transports(transports)`. The immutable set contains normalized `http` and, when configured or advertised, `grpc`. Raise an exception to reject unsupported transports. The shared A2A exposure calls this hook before constructing AgentCards, push clients or listeners, for both blocking and background serving. Plugins without the optional hook retain their existing behaviour. This hook validates configuration and does not itself authenticate requests.
+
+## Resolved operation connections
+
+Native MCP providers and A2A delegation routes support the optional [prepared-operation capability](../runtime/docs/resolved-connections.md). A2A records the interface selected by the SDK, then dispatches with its frozen AgentCard and connection settings. MCP records the selected HTTP or stdio provider binding. Preparation can discover capabilities but never sends the held agent task or `tools/call`.
+
+A2A delivery candidates also carry optional connection metadata. Immediate replies and task retrieval describe the current HTTP request and authenticated principal, independently of the original task connection. Push describes a frozen callback URL and uses the same callback and credentials at delivery. Connection metadata contains no credentials, raw target selector or SDK object. Existing delivery policies need not consume it.

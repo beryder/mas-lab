@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -27,10 +28,16 @@ class KernelConfig:
     hitl_on_tool_result: bool = False
     hitl_once_per_turn: bool = False
     egress_governance_plugin: object | None = field(default=None, compare=False)
+    resolve_connection: Callable[..., Any] | None = field(default=None, compare=False, repr=False)
+    release_connection: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
     enable_memory_egress: bool = False
     enable_transport_egress: bool = False
     max_cot_pass: int = 1
     parallel_tool_calls: bool = True
+    # Where sync plugin tools run on the async path (RuntimeEngine engine.tool_worker /
+    # engine.tool_concurrency). Placement only: results and order are the same.
+    tool_worker: str = "thread"
+    tool_concurrency: int | None = None
     engine_queue_depth: int = DEFAULT_ENGINE_QUEUE_DEPTH
     max_auto_steps: int | None = DEFAULT_MAX_AUTO_STEPS
     policy_engine: GovernancePolicyEngine | None = field(default=None, compare=False)
@@ -44,6 +51,9 @@ class KernelConfig:
     # models rather than just the live transition stream. None when built
     # outside spec parsing (e.g. tests constructing KernelConfig directly).
     agent_spec: dict[str, Any] | None = field(default=None, compare=False)
+    # This agent's id in a MAS (metadata.name / bind agent_id). Empty when the
+    # kernel is built outside a MAS (standalone chat, tests).
+    agent_id: str = ""
     # Optional sink: Session.on_governance_decision. compare=False so tests
     # constructing KernelConfig() still match. Called after authorize/validate.
     on_decision_snapshot: Any | None = field(default=None, compare=False, repr=False)
