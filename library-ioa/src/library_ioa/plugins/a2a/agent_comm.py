@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from mas.library.standard.lib.stack.layer import LinkIdentity
@@ -47,8 +48,21 @@ class A2AAgentComm(LinkIdentity, AgentCommContract):
         if kind not in self.HONOURED_SEND_INTENTS:
             raise AgentCommError(f"intent {kind!r} is not supported")
         del target_agent_id, headers, context
+        return self._request(
+            self._client, task, context_id=context_id, correlation_id=correlation_id, caller_call_id=caller_call_id
+        )
+
+    def _request(
+        self,
+        client: A2AClient,
+        task: str,
+        *,
+        context_id: str = "",
+        correlation_id: int = 0,
+        caller_call_id: str = "",
+    ) -> str:
         try:
-            response = self._client.send_message(
+            response = client.send_message(
                 task,
                 context_id=context_id,
                 metadata={
@@ -105,16 +119,31 @@ class A2AAgentComm(LinkIdentity, AgentCommContract):
             context=context,
         )
 
-    def prepare_send(self, recipient: str, task: str, *, context_id: str = "") -> PreparedOperation:
-        # Use the ordinary send path so conversation policies, lifecycle and
-        # native causal metadata are retained. Only its SDK binding is pinned.
+    def prepare_send(
+        self,
+        recipient: str,
+        task: str,
+        *,
+        context_id: str = "",
+        on_error: Callable[[Exception], str] | None = None,
+    ) -> PreparedOperation:
+        # Capture the client as well as its selected interface. The callbacks
+        # must not consult a replacement communication client after admission.
+        client, request = self._client, self._request
+
         def call(**trace: Any) -> str:
-            return self.send(recipient, task, context_id=context_id, **trace)
+            try:
+                return request(client, task, context_id=context_id, **trace)
+            except Exception as exc:
+                if on_error is not None:
+                    return on_error(exc)
+                raise
 
         async def acall(**trace: Any) -> str:
-            return await self.asend(recipient, task, context_id=context_id, **trace)
+            # The native explicit-context comm's asend uses the same send path.
+            return call(**trace)
 
-        return self._client.prepare_message(recipient, task, context_id=context_id, sender=Invocation(call, acall))
+        return client.prepare_message(recipient, task, context_id=context_id, sender=Invocation(call, acall))
 
     def retire_bindings(self) -> None:
         self._client.retire_bindings()

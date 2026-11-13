@@ -334,6 +334,16 @@ class SendTool:
             extra["headers"] = dict(headers)
         return extra
 
+    @staticmethod
+    def _send_error(target_agent_id: str, protocol: str, exc: Exception) -> str:
+        if isinstance(exc, AgentCommError):
+            return f"[send] agent {target_agent_id!r} via {protocol} failed: {exc}"
+        if isinstance(exc, KeyError):
+            return f"[send] agent {target_agent_id!r} not available on bus"
+        if isinstance(exc, RuntimeError):
+            return f"[send] agent {target_agent_id!r} failed: {exc}"
+        raise exc
+
     def send(
         self,
         target_agent_id: str,
@@ -363,12 +373,8 @@ class SendTool:
         )
         try:
             result = communication.send(target_agent_id, payload, **extra)
-        except AgentCommError as exc:
-            return f"[send] agent {target_agent_id!r} via {protocol} failed: {exc}"
-        except KeyError:
-            return f"[send] agent {target_agent_id!r} not available on bus"
-        except RuntimeError as exc:
-            return f"[send] agent {target_agent_id!r} failed: {exc}"
+        except (AgentCommError, KeyError, RuntimeError) as exc:
+            return self._send_error(target_agent_id, protocol, exc)
         return result
 
     def delegate(
@@ -423,12 +429,8 @@ class SendTool:
                 result = await asend(target_agent_id, payload, **extra)
             else:
                 result = communication.send(target_agent_id, payload, **extra)
-        except AgentCommError as exc:
-            return f"[send] agent {target_agent_id!r} via {protocol} failed: {exc}"
-        except KeyError:
-            return f"[send] agent {target_agent_id!r} not available on bus"
-        except RuntimeError as exc:
-            return f"[send] agent {target_agent_id!r} failed: {exc}"
+        except (AgentCommError, KeyError, RuntimeError) as exc:
+            return self._send_error(target_agent_id, protocol, exc)
         return result
 
     async def adelegate(
@@ -492,11 +494,16 @@ class SendTool:
             prepared = self._prepare(target, message, intent=intent, ctx=ctx)
             if isinstance(prepared, str):
                 raise BindingUnavailable(prepared)
-            communication, _, payload, _ = prepared
+            communication, protocol, payload, _ = prepared
             prepare = getattr(communication, "prepare_send", None)
             if not callable(prepare):
                 raise BindingUnavailable("The selected agent route has no resolved connection capability")
-            return prepare(target, payload, context_id=context_id)
+            return prepare(
+                target,
+                payload,
+                context_id=context_id,
+                on_error=lambda exc: self._send_error(target, protocol, exc),
+            )
 
     def call_delegate_tool(
         self,

@@ -321,3 +321,37 @@ def test_unresolved_or_unknown_sdk_interface_fails_clearly():
     assert SelectedInterface(b"", "GRPC", "grpc.test:9000", (), 5).transport == "grpc"
     with pytest.raises(BindingUnavailable, match="cannot be described"):
         _ = SelectedInterface(b"", "OTHER", "endpoint", (), 5).transport
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_prepared_delegation_preserves_native_error_text(peer, monkeypatch, asynchronous):
+    from mas.runtime.boundary.agentcomm.protocol import AgentCommError
+
+    comm, received, _ = peer
+    tool = SendTool(routes={"worker": AgentCommRoute("worker", "a2a", comm)}, allowed_peers=["worker"])
+    pending = tool.prepare_call("delegate_to_worker", {"task": "fails"})
+
+    def failed(*args, **kwargs):
+        raise AgentCommError("remote failure")
+
+    monkeypatch.setattr(comm._client, "send_message", failed)
+    expected = tool.send("worker", "fails")
+    actual = asyncio.run(pending.ainvoke()) if asynchronous else pending.invoke()
+    assert actual == expected == "[send] agent 'worker' via a2a failed: remote failure"
+    assert received == []
+
+
+def test_replacing_communication_client_cannot_retarget_a_captured_operation(peer_factory):
+    from library_ioa.plugins.a2a.client import A2AClient
+
+    comm, original_received, _ = peer_factory()
+    _, replacement_received, replacement_url = peer_factory()
+    pending = comm.prepare_send("worker", "original destination")
+    original = comm._client
+    comm._client = A2AClient(url=replacement_url)
+    try:
+        assert pending.invoke() == "worker:original destination"
+        assert original_received == ["original destination"]
+        assert replacement_received == []
+    finally:
+        original.close()
