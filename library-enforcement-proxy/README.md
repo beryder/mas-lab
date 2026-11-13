@@ -4,7 +4,7 @@ This experimental package authorizes delegation and MCP requests through MasLab'
 
 ## Compatibility and installation
 
-Use Python 3.11 or newer and MasLab 0.2.0 with the native A2A delivery-policy extension and configurable A2A webserver binding. The integration checks those capabilities at startup. It does not patch installed packages. This library depends on the native release-policy change in [#242](https://github.com/ioc-project/mas-lab/pull/242), including its final `on_release` callback, [webserver transport validation](https://github.com/ioc-project/mas-lab/pull/245), and the native resolved-connection capability. It is not compatible with earlier 0.2.0 builds. Install reviewed MasLab wheels first, then `pip install ./library-enforcement-proxy`. For execution-wide telemetry also install `mas-lab-library-telemetry[convert]` from the same reviewed source.
+Use Python 3.11 or newer and MasLab 0.2.0 with the native A2A delivery-policy extension and configurable A2A webserver binding. The integration checks those capabilities at startup. It does not patch installed packages. This library depends on the native release-policy change in [#242](https://github.com/ioc-project/mas-lab/pull/242), including its final `on_release` callback, [webserver transport validation](https://github.com/ioc-project/mas-lab/pull/245), and [resolved operation connections](https://github.com/ioc-project/mas-lab/pull/258). It is not compatible with earlier 0.2.0 builds. Install reviewed MasLab wheels first, then `pip install ./library-enforcement-proxy`. For execution-wide telemetry also install `mas-lab-library-telemetry[convert]` from the same reviewed source.
 
 ## Configuration
 
