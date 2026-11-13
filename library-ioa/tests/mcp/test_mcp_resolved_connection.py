@@ -126,3 +126,19 @@ async def test_async_first_call_owns_session_cleanup(records):
     assert "empty" in str(result)
     assert state.with_suffix(".started").exists()
     assert not state.exists()
+
+
+def test_native_engine_stop_closes_owned_mcp_client(records):
+    from mas.runtime.engine.llm_live import LiveLlmEngine
+    from mas.runtime.engine.manifest_tool_provider import ManifestToolProvider
+
+    provider, state, _, _ = records
+    engine = LiveLlmEngine(model="scripted", tool_provider=ManifestToolProvider([provider]))
+    operation = provider.prepare_call("read", {})
+    assert "empty" in str(operation.invoke())
+    assert provider._client._loop.started
+    engine.stop()
+    assert not provider._client._loop.started
+    with pytest.raises(BindingUnavailable):
+        operation.invoke()
+    engine.stop()
