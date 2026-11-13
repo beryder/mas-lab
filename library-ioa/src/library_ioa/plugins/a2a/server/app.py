@@ -387,10 +387,12 @@ def build_app(
     add_a2a_routes_to_fastapi(
         app,
         agent_card_routes=create_agent_card_routes(card),
-        jsonrpc_routes=create_jsonrpc_routes(request_handler, context_builder=_DeliveryContextBuilder(), rpc_url="/"),
+        jsonrpc_routes=create_jsonrpc_routes(
+            request_handler, context_builder=_DeliveryContextBuilder() if delivery is not None else None, rpc_url="/"
+        ),
         rest_routes=create_rest_routes(
             request_handler,
-            context_builder=_DeliveryContextBuilder(),
+            context_builder=_DeliveryContextBuilder() if delivery is not None else None,
             path_prefix="/a2a/rest",
         ),
     )
