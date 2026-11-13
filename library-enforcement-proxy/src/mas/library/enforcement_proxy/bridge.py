@@ -19,8 +19,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from mas.library.enforcement_proxy.connections import DestinationBindings
-from mas.runtime.boundary.connection import ConnectionInfo
 
 
 class AuthorizationUnavailable(RuntimeError):
@@ -72,7 +70,6 @@ class Bridge:
         self.config = json.loads(Path(config_file).read_text())
         self.agent = agent
         self.identity = self.config["identities"][agent]
-        self.bindings = DestinationBindings(self.identity.get("bindings"), self.config["identities"])
         self.timeout = float(self.config.get("timeout", 20))
         if not math.isfinite(self.timeout) or not 0 < self.timeout <= 60:
             raise ValueError("Mediation timeout must be finite, positive and at most 60 seconds")
@@ -89,6 +86,8 @@ class Bridge:
         self.tls = ssl.create_default_context(cafile=str(base / self.config["ca_file"]))
         self.tls.load_cert_chain(str(base / self.identity["certificate_file"]), str(base / self.identity["key_file"]))
         self._closed = threading.Event()
+        for tool in self.identity.get("tools", {}):
+            self.request_route(tool)
 
     def client(self) -> httpx.AsyncClient:
         # Per-operation clients are safe across native agent threads and event loops.
@@ -101,31 +100,28 @@ class Bridge:
 
     def request_route(self, tool: str) -> dict:
         route = self.identity.get("tools", {}).get(tool)
-        if not isinstance(route, dict) or route.get("kind") not in {"delegation", "tool"}:
+        if (
+            not isinstance(route, dict)
+            or route.get("kind") not in {"delegation", "tool"}
+            or route.get("destination") not in self.config["identities"]
+            or route.get("transport") not in ({"http", "stdio"} if route.get("kind") == "tool" else {"http"})
+            or (route.get("kind") == "tool" and not route.get("tool"))
+        ):
             raise AuthorizationUnavailable("No configured authorization route for tool")
         return route
 
     async def authorize(
-        self, *, destination: str, kind: str, payload: bytes, context: dict, connection: ConnectionInfo, tool: str = ""
+        self, *, destination: str, kind: str, transport: str, payload: bytes, context: dict, tool: str = ""
     ) -> DecisionRecord:
         if self._closed.is_set():
             raise AuthorizationUnavailable("Mediation integration is closed")
         if destination not in self.config["identities"] or kind not in {"delegation", "tool", "release"}:
             raise AuthorizationUnavailable("Unregistered authorization destination or kind")
-        try:
-            binding = self.bindings.validate(connection, destination, kind)
-        except ValueError as exc:
-            raise AuthorizationUnavailable(str(exc)) from None
-        # Destination validation precedes evidence publication and CF submission.
+        if transport not in ({"http", "stdio"} if kind == "tool" else {"http"}):
+            raise AuthorizationUnavailable("Unsupported configured operation transport")
         # Freeze all content before publication. No policy may rewrite it.
         envelope = canonical(
-            {
-                "candidate": json.loads(payload),
-                "context": context,
-                "kind": kind,
-                "tool": tool,
-                "connection": binding,
-            }
+            {"candidate": json.loads(payload), "context": context, "kind": kind, "tool": tool, "transport": transport}
         )
         if len(envelope) > int(self.config.get("max_evidence_bytes", 1048576)):
             raise AuthorizationUnavailable("Candidate evidence exceeds the configured bound")
@@ -153,7 +149,7 @@ class Bridge:
             "evaluation_id": evaluation,
             "destination": destination,
             "kind": kind,
-            "transport": binding["transport"],
+            "transport": transport,
             "trace_id": trace,
             "span_id": span,
             "send_trace_id": trace,

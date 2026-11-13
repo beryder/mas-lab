@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -28,8 +27,6 @@ class KernelConfig:
     hitl_on_tool_result: bool = False
     hitl_once_per_turn: bool = False
     egress_governance_plugin: object | None = field(default=None, compare=False)
-    resolve_connection: Callable[..., Any] | None = field(default=None, compare=False, repr=False)
-    release_connection: Callable[[int], None] | None = field(default=None, compare=False, repr=False)
     enable_memory_egress: bool = False
     enable_transport_egress: bool = False
     max_cot_pass: int = 1

@@ -9,25 +9,22 @@ from collections.abc import Callable
 from typing import Any
 
 from mas.library.enforcement_proxy import require_native_hooks
+from mas.library.enforcement_proxy.bridge import AuthorizationUnavailable, Bridge, canonical
 
 try:
     from library_ioa.plugins.a2a.delivery import DeliveryCandidate, DeliveryDecision, DeliveryOutcome
     from library_ioa.plugins.mcp.client.wrapper import run_sync
-    from mas.library.enforcement_proxy.bridge import AuthorizationUnavailable, Bridge, canonical
     from mas.runtime.boundary.gov.plugin import EgressDecision
     from mas.runtime.boundary.gov.policy import EgressIntentView
     from mas.runtime.boundary.gov.transition import GovTransition
     from mas.runtime.kernel.config import KernelConfig
     from mas.runtime.kernel.coupling import GovDecision
 except ImportError as error:
-    raise RuntimeError(
-        "MasLab with native A2A delivery policies and resolved operation connections is required"
-    ) from error
+    raise RuntimeError("MasLab with native A2A delivery policies is required") from error
 
 
 class RequestPolicy:
     plugin_id = "proxy_requests"
-    requires_connection_metadata = True
 
     def __init__(self, config_file: str, agent: str, **_kwargs: Any) -> None:
         require_native_hooks()
@@ -56,7 +53,7 @@ class RequestPolicy:
                 self.bridge.authorize(
                     destination=route["destination"],
                     kind=route["kind"],
-                    connection=intent.connection,
+                    transport=route["transport"],
                     tool=route.get("tool", ""),
                     context={**context, "correlation_id": intent.correlation_id},
                     payload=canonical({"name": intent.tool_name, "arguments": intent.tool_arguments or {}}),
@@ -111,7 +108,7 @@ class ReleasePolicy:
             result = await self.bridge.authorize(
                 destination=destination,
                 kind="release",
-                connection=candidate.connection,
+                transport="http",
                 payload=candidate.payload,
                 context={
                     "task_id": candidate.task_id,

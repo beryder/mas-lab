@@ -4,9 +4,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
-from mas.runtime.boundary.connection import ConnectionInfo
 from mas.runtime.schema.governance import (
     GovernanceAction,
     GovIngressProfile,
@@ -25,19 +24,18 @@ class EgressIntentView:
     # TOOL_CALL. None = not recorded (fall back to spec.tools). () = recorded
     # as an empty offer — the model was given no tools this call.
     offered_tools: tuple[str, ...] | None = None
-    connection: ConnectionInfo | None = None
 
 
 _PROFILE_LABEL: dict[GovPolicyProfile, str] = {
-    GovPolicyProfile.PERMISSIVE: "permissive",
-    GovPolicyProfile.BLOCK_DESTRUCTIVE: "block-destructive",
-    GovPolicyProfile.HITL_DESTRUCTIVE: "hitl-destructive",
-    GovPolicyProfile.LOG_ALL: "log-all",
-    GovPolicyProfile.MODIFY_DESTRUCTIVE: "modify-destructive",
-    GovPolicyProfile.TERMINATE_DESTRUCTIVE: "terminate-destructive",
-    GovPolicyProfile.SKIP_DESTRUCTIVE: "skip-destructive",
-    GovPolicyProfile.BLACKLIST_DESTRUCTIVE: "blacklist-destructive",
-    GovPolicyProfile.RETRY_DESTRUCTIVE: "retry-destructive",
+    GovPolicyProfile.PERMISSIVE:            "permissive",
+    GovPolicyProfile.BLOCK_DESTRUCTIVE:      "block-destructive",
+    GovPolicyProfile.HITL_DESTRUCTIVE:       "hitl-destructive",
+    GovPolicyProfile.LOG_ALL:                "log-all",
+    GovPolicyProfile.MODIFY_DESTRUCTIVE:     "modify-destructive",
+    GovPolicyProfile.TERMINATE_DESTRUCTIVE:  "terminate-destructive",
+    GovPolicyProfile.SKIP_DESTRUCTIVE:       "skip-destructive",
+    GovPolicyProfile.BLACKLIST_DESTRUCTIVE:  "blacklist-destructive",
+    GovPolicyProfile.RETRY_DESTRUCTIVE:      "retry-destructive",
 }
 
 
@@ -69,9 +67,7 @@ def resolve_egress_governance(
                 f"tool '{intent.tool_name}' is blacklisted",
             )
         policy = policy_engine.find_matching_policy(
-            "tool_input",
-            {"arguments": intent.tool_arguments or {}},
-            tool_name=intent.tool_name,
+            "tool_input", {"arguments": intent.tool_arguments or {}}, tool_name=intent.tool_name,
         )
         if policy is not None:
             decision = policy_engine.map_action(policy)
@@ -100,13 +96,13 @@ def egress_governance_outcome(
         return GovernanceAction.LOG, label, "log-all profile allows the action and records it"
 
     action_for_destructive = {
-        GovPolicyProfile.BLOCK_DESTRUCTIVE: GovernanceAction.BLOCK,
-        GovPolicyProfile.HITL_DESTRUCTIVE: GovernanceAction.HITL,
-        GovPolicyProfile.MODIFY_DESTRUCTIVE: GovernanceAction.MODIFY,
+        GovPolicyProfile.BLOCK_DESTRUCTIVE:     GovernanceAction.BLOCK,
+        GovPolicyProfile.HITL_DESTRUCTIVE:      GovernanceAction.HITL,
+        GovPolicyProfile.MODIFY_DESTRUCTIVE:    GovernanceAction.MODIFY,
         GovPolicyProfile.TERMINATE_DESTRUCTIVE: GovernanceAction.TERMINATE,
-        GovPolicyProfile.SKIP_DESTRUCTIVE: GovernanceAction.SKIP,
+        GovPolicyProfile.SKIP_DESTRUCTIVE:      GovernanceAction.SKIP,
         GovPolicyProfile.BLACKLIST_DESTRUCTIVE: GovernanceAction.BLACKLIST,
-        GovPolicyProfile.RETRY_DESTRUCTIVE: GovernanceAction.RETRY,
+        GovPolicyProfile.RETRY_DESTRUCTIVE:     GovernanceAction.RETRY,
     }.get(profile)
     if action_for_destructive is None:
         return GovernanceAction.ALLOW, label, f"unrecognized profile {label} defaults to allow"
@@ -145,7 +141,7 @@ def ingress_governance_outcome(
     action_and_verb = {
         GovIngressProfile.RETRY_ON_ERROR: (GovernanceAction.RETRY, "retries the call"),
         GovIngressProfile.BLOCK_ON_ERROR: (GovernanceAction.BLOCK, "blocks the call"),
-        GovIngressProfile.SKIP_ON_ERROR: (GovernanceAction.SKIP, "skips the call"),
+        GovIngressProfile.SKIP_ON_ERROR:  (GovernanceAction.SKIP, "skips the call"),
     }.get(profile)
     if action_and_verb is None:
         return GovernanceAction.ALLOW, f"unrecognized profile {profile.value} defaults to allow"
@@ -157,5 +153,7 @@ def apply_egress_modify(intent: EgressIntentView, action: GovernanceAction) -> E
     """Downgrade a MODIFY-decided intent to non-destructive; a no-op for any
     other action or an already-non-destructive intent."""
     if action == GovernanceAction.MODIFY and intent.destructive:
-        return replace(intent, destructive=False)
+        return EgressIntentView(
+            op=intent.op, destructive=False, correlation_id=intent.correlation_id
+        )
     return intent

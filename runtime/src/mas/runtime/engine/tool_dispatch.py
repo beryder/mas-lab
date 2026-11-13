@@ -10,7 +10,6 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from mas.runtime.boundary.connection import PreparedOperation
 from mas.runtime.engine.manifest_tool_provider import ManifestToolLoadError
 from mas.runtime.engine.tool_routing import ExplicitToolUnavailableError, UnclaimedToolError
 
@@ -154,20 +153,7 @@ def _dispatch_once(
     tool_provider: ManifestToolProvider | None,
     correlation_id: int,
     caller_call_id: str,
-    prepared: PreparedOperation | None = None,
 ) -> str:
-    if prepared is not None:
-        if (
-            tool_provider is not None
-            and not (delegation is not None and _DelegationEngineTool(delegation).claims(tool))
-            and not any(c.claims(tool) for c in engine_contracts)
-        ):
-            tool_provider.assert_call_allowed(tool, ctx=ctx)
-        return format_tool_result(
-            prepared.invoke(correlation_id=correlation_id, caller_call_id=caller_call_id),
-            ctx=ctx,
-            call_id=caller_call_id,
-        )
     contracts = list(engine_contracts)
     if delegation is not None:
         contracts.insert(0, _DelegationEngineTool(delegation))
@@ -243,7 +229,6 @@ def execute_engine_tool(
     tool_provider: ManifestToolProvider | None = None,
     correlation_id: int = 0,
     caller_call_id: str = "",
-    prepared: PreparedOperation | None = None,
     sandbox: Any = None,
 ) -> str:
     from mas.runtime.reliability.classes import ClassifiedFailure
@@ -262,7 +247,6 @@ def execute_engine_tool(
             tool_provider=tool_provider,
             correlation_id=correlation_id,
             caller_call_id=caller_call_id,
-            prepared=prepared,
         )
 
     try:
@@ -284,7 +268,6 @@ async def aexecute_engine_tool(
     tool_provider: ManifestToolProvider | None = None,
     correlation_id: int = 0,
     caller_call_id: str = "",
-    prepared: PreparedOperation | None = None,
     sandbox: Any = None,
     placement: Any | None = None,
 ) -> str:
@@ -319,21 +302,11 @@ async def aexecute_engine_tool(
                 correlation_id=correlation_id,
                 caller_call_id=caller_call_id,
                 sandbox=sandbox,
-                prepared=prepared,
             )
         finally:
             unbind_placement(token)
 
     async def _body() -> str:
-        if prepared is not None:
-            if (
-                tool_provider is not None
-                and not (delegation is not None and _DelegationEngineTool(delegation).claims(tool))
-                and not any(c.claims(tool) for c in engine_contracts)
-            ):
-                tool_provider.assert_call_allowed(tool, ctx=ctx)
-            result = await prepared.ainvoke(correlation_id=correlation_id, caller_call_id=caller_call_id)
-            return format_tool_result(result, ctx=ctx, call_id=caller_call_id)
         contracts = list(engine_contracts)
         if delegation is not None:
             contracts.insert(0, _DelegationEngineTool(delegation))

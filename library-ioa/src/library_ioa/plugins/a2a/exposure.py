@@ -16,7 +16,6 @@ from a2a.types.a2a_pb2 import TaskPushNotificationConfig
 from a2a.utils.errors import InvalidAgentResponseError
 from a2a.utils.proto_utils import to_stream_response
 from google.protobuf.json_format import MessageToDict
-from mas.runtime.boundary.connection import ConnectionInfo, ConnectionTarget
 from mas.runtime.boundary.webserver import (
     TransportValidatingWebServer,
     WebServerContract,
@@ -46,20 +45,6 @@ class A2APushNotificationSender(BasePushNotificationSender):
         push_info: TaskPushNotificationConfig,
         task_id: str,
     ) -> bool:
-        # Freeze the callback and credentials before awaiting authorization.
-        # Never read the mutable task-store object again at HTTP dispatch.
-        snapshot = TaskPushNotificationConfig()
-        snapshot.CopyFrom(push_info)
-        push_info = snapshot
-        target = ConnectionTarget(endpoint=push_info.url)
-        connection = ConnectionInfo(
-            "a2a",
-            "http",
-            uuid4().hex,
-            0,
-            lambda expected: expected == target,
-            "a2a:push",
-        )
         payload = to_stream_response(event)
         if self.delivery is not None:
             try:
@@ -68,7 +53,6 @@ class A2APushNotificationSender(BasePushNotificationSender):
                     kind="push",
                     destination=push_info.url,
                     task_id=task_id,
-                    connection=connection,
                 )
             except InvalidAgentResponseError:
                 return False
