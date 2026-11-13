@@ -88,6 +88,7 @@ class A2AClient:
         stream: bool = False,
         selected: SelectedInterface | None = None,
     ) -> dict[str, Any]:
+        selected = selected or self._active_interface()
         async with httpx.AsyncClient(
             headers=dict(selected.headers) if selected else self.headers,
             timeout=selected.timeout if selected else self.timeout,
