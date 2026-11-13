@@ -78,8 +78,8 @@ def wire(monkeypatch, *, allow=True, missing=False, malformed=False, wait=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("allowed", [True, False])
-@pytest.mark.parametrize("transport", ["http", "stdio"])
-async def test_publish_before_reference_only_authorization(config, monkeypatch, allowed, transport):
+async def test_publish_before_reference_only_authorization(config, monkeypatch, allowed):
+    transport = "http"
     calls = wire(monkeypatch, allow=allowed)
     result = await Bridge(config, "planner").authorize(
         destination="worker",
@@ -302,26 +302,49 @@ async def test_publication_failure_and_wrong_producer_cannot_release(config, mon
 
 
 def test_example_mcp_write_and_read(tmp_path):
+    import socket
+    import subprocess
     import sys
+    import time
     from pathlib import Path
 
     from library_ioa.plugins.mcp.provider import MCPToolProvider
 
     example = Path(__file__).resolve().parents[1] / "examples/records.py"
-    provider = MCPToolProvider.from_provider_spec(
-        {
-            "name": "records",
-            "kind": "mcp",
-            "command": sys.executable,
-            "args": [str(example), str(tmp_path / "record.json")],
-        }
-    )
-    try:
-        assert {tool["name"] for tool in provider.list_tools()} == {"records_read", "records_write"}
-        provider.call_tool("records_write", {"value": "saved value"})
-        assert "saved value" in str(provider.call_tool("records_read", {}))
-    finally:
-        provider.close()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    provider = None
+    with (tmp_path / "server.log").open("w") as log:
+        process = subprocess.Popen(
+            [sys.executable, str(example), str(tmp_path / "record.json"), str(port)], stdout=log, stderr=log
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        break
+                except OSError:
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        pytest.fail("Example MCP HTTP server did not start")
+                    time.sleep(0.01)
+            provider = MCPToolProvider.from_provider_spec(
+                {
+                    "name": "records",
+                    "kind": "mcp",
+                    "transport": "streamable-http",
+                    "url": f"http://127.0.0.1:{port}/mcp",
+                }
+            )
+            assert {tool["name"] for tool in provider.list_tools()} == {"records_read", "records_write"}
+            provider.call_tool("records_write", {"value": "saved value"})
+            assert "saved value" in str(provider.call_tool("records_read", {}))
+        finally:
+            if provider is not None:
+                provider.close()
+            process.terminate()
+            process.wait(timeout=10)
 
 
 @pytest.mark.parametrize(
@@ -329,6 +352,7 @@ def test_example_mcp_write_and_read(tmp_path):
     [
         {"transport": None},
         {"transport": "grpc"},
+        {"transport": "stdio"},
         {"kind": "delegation", "transport": "stdio"},
         {"destination": "unknown"},
         {"tool": ""},
@@ -348,10 +372,12 @@ def test_invalid_configured_routes_fail_before_transport(config, monkeypatch, pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind, transport", [("tool", "grpc"), ("delegation", "stdio"), ("release", "stdio")])
+@pytest.mark.parametrize(
+    "kind, transport", [("tool", "grpc"), ("tool", "stdio"), ("delegation", "stdio"), ("release", "stdio")]
+)
 async def test_unsupported_operation_transport_never_publishes(config, monkeypatch, kind, transport):
     calls = wire(monkeypatch)
-    with pytest.raises(AuthorizationUnavailable, match="transport"):
+    with pytest.raises(AuthorizationUnavailable, match="HTTP"):
         await Bridge(config, "planner").authorize(
             destination="worker", kind=kind, transport=transport, payload=b"{}", context={}
         )

@@ -35,12 +35,12 @@ a2a:
     params: {config_file: /protected/client.json}
 ```
 
-`client.json` contains a registered `mas_id`, HTTPS `adapter_url`, `otlp_url`, `ca_file`, and `identities` keyed by local aliases. Each producing agent needs its canonical `id`, `certificate_file`, `key_file`, and exact `tools` mapping. A mapping selects `destination`, `kind` (`delegation` or `tool`), the configured operation `transport`, and, for MCP, the exact `tool` name. Delegation uses `http`; MCP tools use `http` or `stdio`. The authorization endpoint itself uses HTTPS/mTLS independently of the protected operation. Relative credential paths resolve against the configuration file. Connection credentials never go into activity evidence.
+`client.json` contains a registered `mas_id`, HTTPS `adapter_url`, `otlp_url`, `ca_file`, and `identities` keyed by local aliases. Each producing agent needs its canonical `id`, `certificate_file`, `key_file`, and exact `tools` mapping. A mapping selects `destination`, `kind` (`delegation` or `tool`), the configured operation `transport`, and, for MCP, the exact `tool` name. Delegation, MCP tools and response delivery use `http`. Stdio is not supported by this contribution. The authorization endpoint itself uses HTTPS/mTLS independently of the protected operation. Relative credential paths resolve against the configuration file. Connection credentials never go into activity evidence.
 
 For example, an entry in an agent's `tools` mapping can be:
 
 ```json
-{"records_write": {"destination": "records", "kind": "tool", "tool": "records_write", "transport": "stdio"}}
+{"records_write": {"destination": "records", "kind": "tool", "tool": "records_write", "transport": "http"}}
 ```
 
 This cooperative integration trusts runtime code and configured routes to reach the declared recipient over the declared transport. It does not verify the SDK-selected endpoint or protect against route substitution after authorization. Unknown routes and unsupported configured transports are blocked.
@@ -55,7 +55,7 @@ The default authorization deadline is 20 seconds and covers publication, mediati
 
 Each operation owns its HTTP clients. Native exposure cleanup closes delivery policies. Embedders close request policies when shutting down their runtimes. In-process adoption requires trusted runtime code and configuration. It provides no external isolation guarantee.
 
-The compatible reference-based adapter belongs to enforcement-proxy. Its proposed MasLab `stdio` profile requires maintainer, CF and CE agreement before merge or adoption; local contract fixtures do not establish compatibility with deployed consumers. Full CFN/SCOPE deployment is separate from this library. See [the minimal configuration example](examples/README.md). Unit tests use the native runtime and delivery controller. Live example results are deterministic transport/enforcement evidence, not semantic-evaluation results.
+The compatible reference-based adapter belongs to enforcement-proxy. This HTTP-only contribution does not depend on the separate [stdio contract proposal](https://github.com/ioc-project/enforcement-proxy/issues/386). Full CFN/SCOPE deployment is separate from this library. See [the minimal configuration example](examples/README.md). Unit tests use the native runtime and delivery controller. Live example results are deterministic transport/enforcement evidence, not semantic-evaluation results.
 
 ## Optional release notifications
 

@@ -26,4 +26,4 @@ def records_read() -> str:
 
 
 if __name__ == "__main__":
-    server.run(transport="stdio")
+    server.run(transport="streamable-http", host="127.0.0.1", port=int(sys.argv[2]) if len(sys.argv) > 2 else 9200)

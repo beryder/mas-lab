@@ -104,10 +104,10 @@ class Bridge:
             not isinstance(route, dict)
             or route.get("kind") not in {"delegation", "tool"}
             or route.get("destination") not in self.config["identities"]
-            or route.get("transport") not in ({"http", "stdio"} if route.get("kind") == "tool" else {"http"})
+            or route.get("transport") != "http"
             or (route.get("kind") == "tool" and not route.get("tool"))
         ):
-            raise AuthorizationUnavailable("No configured authorization route for tool")
+            raise AuthorizationUnavailable("No configured HTTP authorization route for tool")
         return route
 
     async def authorize(
@@ -117,8 +117,8 @@ class Bridge:
             raise AuthorizationUnavailable("Mediation integration is closed")
         if destination not in self.config["identities"] or kind not in {"delegation", "tool", "release"}:
             raise AuthorizationUnavailable("Unregistered authorization destination or kind")
-        if transport not in ({"http", "stdio"} if kind == "tool" else {"http"}):
-            raise AuthorizationUnavailable("Unsupported configured operation transport")
+        if transport != "http":
+            raise AuthorizationUnavailable("Only HTTP operation transport is supported")
         # Freeze all content before publication. No policy may rewrite it.
         envelope = canonical(
             {"candidate": json.loads(payload), "context": context, "kind": kind, "tool": tool, "transport": transport}

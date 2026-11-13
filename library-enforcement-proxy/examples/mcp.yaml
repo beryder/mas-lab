@@ -7,7 +7,6 @@ spec:
   tool_servers:
     - id: records
       protocol: mcp
-      transport: stdio
-      command: python
-      args: [records.py, records.json]
+      transport: streamable-http
+      url: http://127.0.0.1:9200/mcp
       tools: [records_read, records_write]
