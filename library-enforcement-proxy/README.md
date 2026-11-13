@@ -1,6 +1,6 @@
 # Native MasLab integration
 
-This experimental package authorizes delegation and MCP requests through MasLab's governance API and authorizes A2A replies through its delivery-policy extension. The Go adapter retains CFN communication and audit ownership. Proposed activities go to SCOPE through OTLP before the adapter receives their references. There is no local policy engine or automatic retry.
+This experimental package is intended for controlled agent testing. It authorizes delegation and MCP requests through MasLab's governance API and authorizes A2A replies through its delivery-policy extension. The Go adapter retains CFN communication and audit ownership. Proposed activities go to SCOPE through OTLP before the adapter receives their references. There is no local policy engine or automatic retry.
 
 ## Compatibility and installation
 
@@ -35,7 +35,7 @@ a2a:
     params: {config_file: /protected/client.json}
 ```
 
-`client.json` contains a registered `mas_id`, HTTPS `adapter_url`, `otlp_url`, `ca_file`, and `identities` keyed by local aliases. Each producing agent needs its canonical `id`, `certificate_file`, `key_file`, and exact `tools` mapping. A mapping selects `destination`, `kind` (`delegation` or `tool`), the configured operation `transport`, and, for MCP, the exact `tool` name. Delegation, MCP tools and response delivery use `http`. Stdio is not supported by this contribution. The authorization endpoint itself uses HTTPS/mTLS independently of the protected operation. Relative credential paths resolve against the configuration file. Connection credentials never go into activity evidence.
+`client.json` contains a registered `mas_id`, HTTPS `adapter_url`, `otlp_url`, `ca_file`, and `identities` keyed by local aliases. Each producing agent needs its canonical `id`, `certificate_file`, `key_file`, and exact `tools` mapping. A mapping selects `destination`, `kind` (`delegation` or `tool`), the configured operation `transport`, and, for MCP, the exact `tool` name. The integration admits only declared `http` operation routes. Stdio declarations are not supported by this contribution. The authorization endpoint itself uses HTTPS/mTLS independently of the protected operation. Relative credential paths resolve against the configuration file. Connection credentials never go into activity evidence.
 
 For example, an entry in an agent's `tools` mapping can be:
 
@@ -43,7 +43,11 @@ For example, an entry in an agent's `tools` mapping can be:
 {"records_write": {"destination": "records", "kind": "tool", "tool": "records_write", "transport": "http"}}
 ```
 
-This cooperative integration trusts runtime code and configured routes to reach the declared recipient over the declared transport. It does not verify the SDK-selected endpoint or protect against route substitution after authorization. Unknown routes and unsupported configured transports are blocked.
+The MasLab library validates the declared recipient and operation transport from trusted integration configuration. The enforcement-proxy adapter checks those declarations against its configured authorization routes and authenticates the caller through mTLS.
+
+The integration does not independently verify or pin the connection used to execute the operation. It assumes the test setup routes operations to the declared recipient over the declared transport. Test results demonstrate authorization and governance-hook behavior within that configured setup.
+
+Unknown routes and unsupported transport declarations are blocked.
 
 The example shows how to bind an existing adapter configuration. Its standard ASGI authentication plugin resolves bearer credentials from each identity's `a2a_credential_env`. Credentials must be distinct and at least 32 characters. AgentCards remain publicly discoverable. Protocol methods require authentication. Production deployments may use their own native webserver authentication plugin. Anonymous response recipients are denied. Push callbacks additionally require an exact protected `push_destinations` URL-to-recipient mapping.
 
@@ -55,7 +59,7 @@ The default authorization deadline is 20 seconds and covers publication, mediati
 
 Each operation owns its HTTP clients. Native exposure cleanup closes delivery policies. Embedders close request policies when shutting down their runtimes. In-process adoption requires trusted runtime code and configuration. It provides no external isolation guarantee.
 
-The compatible reference-based adapter belongs to enforcement-proxy. This HTTP-only contribution does not depend on the separate [stdio contract proposal](https://github.com/ioc-project/enforcement-proxy/issues/386). Full CFN/SCOPE deployment is separate from this library. See [the minimal configuration example](examples/README.md). Unit tests use the native runtime and delivery controller. Live example results are deterministic transport/enforcement evidence, not semantic-evaluation results.
+The compatible reference-based adapter belongs to enforcement-proxy. This HTTP-only contribution does not depend on the separate [stdio contract proposal](https://github.com/ioc-project/enforcement-proxy/issues/386). Full CFN/SCOPE deployment is separate from this library. See [the minimal configuration example](examples/README.md). Package tests exercise the native runtime and delivery controller within the configured test setup. They do not establish independent connection verification, deployed CFN/SCOPE compatibility or semantic-policy accuracy.
 
 ## Optional release notifications
 
